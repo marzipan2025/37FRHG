@@ -1,0 +1,7 @@
+.DS_Store
+.godot/
+*.import
+preview/gif/*.png
+tools/snap/m.glb
+tools/snap/m_*.png
+__pycache__/
