@@ -40,6 +40,19 @@
 - 2026-11-21 **37RHHG 에 붙임**: 37RHHG `app/frog/`(frog.gd·frog.gdshader·frog_rig.glb)로 옮겨 메뉴바에서 소녀/개구리 마법사를 바꿀 수 있다. 소녀 코드는 그대로 두고 개구리는 따로(자세한 것은 37RHHG CLAUDE.md "캐릭터 바꾸기"). 입 벌리기는 넣지 않았다. preview 에서 값을 바꾸면 37RHHG `app/frog/`에도 옮겨야 한다.
 - 다음: ⑨ 서 있을 때 숨쉬기 등(⑤ 입 벌리기는 나중에 다시). 텍스처는 나중에 JPG 로 줄일 것.
 
+## 맥 메뉴바 앱 (`app/`, 2026-11-22)
+
+- 37RHHG 에서 개구리 마법사만 떼어 낸 독립 앱(번들 `local.frhg.walker`, 이름 37FRHG). 조작과 동작만 가져왔고 AI(말 걸기)·말풍선 도우미·그림 버튼 메뉴·화면 보고 길 고르기·발자국·목소리는 뺐다(AI 는 나중에 붙일 예정, 사용자 요청).
+- 파일: `app/main.gd`(37RHHG main.gd 에서 창·이동·조작·혼자 돌아다니기·마우스 조명·인사·두리번·깜빡임·z 확대·프레임 낮추기만 남겨 새로 정리), `app/frog/`(37RHHG `app/frog/` 를 그대로 복사: frog.gd·frog.gdshader·frog_rig.glb), `app/updater.gd`, `app/native/`(모든 데스크탑에 보이기 GDExtension, 37RHHG 것 그대로), `app/icon.png`(`reference/views/front.png` 머리를 잘라 `packaging/make_icon.swift`).
+- 메뉴바 메뉴: 걷기/멈추기 토글(지금이 아닌 쪽을 보여 줌, "걷기"를 누르면 37RHHG 처럼 걷기 2~6초(25% 달리기)·쉬기 1.5~5초를 랜덤하게, 수직·수평으로만, 막히면 되돌거나 꺾음), 업데이트 확인…, 종료. 캐릭터를 눌러 나오는 메뉴는 없다.
+- 캐릭터를 클릭하면(4pt 안 끌고 뗌) 돌아서서 정면을 보고 멈춘다(돌아다니기 끔, 키보드 포커스). 끌어서 옮기기, 방향키·WASD·Shift·Space, z 누르는 동안 2배는 37RHHG 그대로.
+- 인사는 정면을 보고 서 있을 때 40~90초마다. 깜빡임·점프·달리기 때 가끔 눈 감기. 입 벌리기 없음. 의상·유리병 색 바꾸기(tint·bloom)는 셰이더에 남아 있지만 켜는 곳이 없다(AI 붙일 때 씀).
+- 크기: 37RHHG 의 개구리와 같음(소녀보다 125%, 화면 키 150pt, `frog.SIZE`). 창 210pt 그대로라 점프 높이는 40pt 로 줄임(`_jump_h`). 클릭 영역 `HIT_RECT` 는 모자 챙이 넓어 37RHHG 보다 넓게(36~144pt).
+- 업데이트 확인(`updater.gd`): GitHub API `releases/latest`(marzipan2025/37FRHG) 태그를 앱 Info.plist 의 CFBundleShortVersionString 과 비교해 macOS 대화상자(`DisplayServer.dialog_show`)로 알린다. [업데이트] → 릴리스의 .zip 을 받아 앱이 끝난 뒤 셸이 풀어(격리 표시 지움) 번들을 바꾸고 다시 띄운다. **저장소가 비공개라 지금은 API 가 404 → "확인하지 못했어요"**(37RHHG 는 이 때문에 공개로 바꿨다). 2026-11-22 사용자가 비공개 유지로 정했다 → 업데이트 확인은 공개로 바꾸기 전까지 늘 실패한다(새 버전은 dmg 로 직접 설치).
+- 빌드: `zsh app/build_mac.sh` → `build/37FRHG.app`(178MB). 버전은 `app/export_presets.cfg`의 `short_version`(지금 0.0.1 은 임시값, 릴리스 번호는 사용자에게 물을 것).
+- 확인: `cd app && godot --path . --quit-after 600 -- --snapshot` → `app/snap/*.png`(서기·옆 걷기·달리기·뒤·점프·인사·눈 감기), `-- --wander`(돌아다니기로 시작), `-- --demo`(키 조작 자동 반복). 처음 열 때 `godot --headless --path app --import`. 2026-11-22 내보낸 앱으로 돌아다니기와 클릭 → 정면 멈춤(20초 동안 창 위치 그대로)을 확인.
+- 37RHHG 와 같은 개구리를 고칠 때는 두 저장소의 `app/frog/`를 같이 맞출 것.
+
 ## 계획 (37RHHG 순서 그대로)
 
 1. 정면 이미지 → `tripo_p2_image_to_3d`(`delight: true`, `face_limit: 30000`, 약 34크레딧). 필요하면 다중 시점(`tripo_h3_1_multiview_to_3d`, 정면·왼쪽·후면·오른쪽 순)과 비교.

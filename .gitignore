@@ -5,3 +5,6 @@ preview/gif/*.png
 tools/snap/m.glb
 tools/snap/m_*.png
 __pycache__/
+build/
+app/snap/
+app/frog/frog_rig_texture_*.png
