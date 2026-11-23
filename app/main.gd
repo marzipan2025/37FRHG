@@ -141,6 +141,10 @@ var keystore: Node     # Claude API 키(키체인, keystore.gd)
 var talk: Node         # Claude 와 말하기(talk.gd)
 const TINT_TIME := 0.6           # 옷 색이 다 바뀌는 데 걸리는 시간(초)
 var tint_now := -1.0             # 0 보라(Haiku) ~ 1 검정·터키색(Sonnet). -1 은 아직 안 정함(처음엔 바로 맞춘다)
+var potion_on := false           # 물약 색을 바꿨는지(아니면 원래 그라데이션). set_potion() 으로 바꾼다
+var potion_want := Color(0.98, 0.80, 0.16)  # 바꿀 물약 색
+var potion_now := -1.0           # 물약 색 바꾼 정도 0~1(셰이더 bloom). -1 은 처음(바로 맞춤)
+var potion_col := Color(0.98, 0.80, 0.16)   # 지금 셰이더에 넣은 물약 색(bloom_to). 다른 색으로 바꿀 때 이 색에서 옮겨 간다
 var actions: Node      # 개구리가 맥에서 하는 일(Claude 도구, actions.gd)
 var click_wait := -1.0  # 클릭 뒤 두 번째 클릭을 기다리는 남은 시간. 0 아래로 가면 한 번 클릭
 const DOUBLE_CLICK := 0.28               # bubble.gd: 머리 위 말풍선(say(글))
@@ -199,6 +203,10 @@ func _ready() -> void:
 	var fdump := OS.get_environment("FROG_DUMP")
 	if fdump != "":
 		get_tree().create_timer(2.0).timeout.connect(func(): get_viewport().get_texture().get_image().save_png(fdump))
+	# 확인용: -- --potion "#RRGGBB" 면 1초 뒤 물약 색을 바꾼다(아직 이 표시를 쓰는 기능은 없다).
+	var pi_ := args.find("--potion")
+	if pi_ >= 0 and pi_ + 1 < args.size():
+		get_tree().create_timer(1.0).timeout.connect(set_potion.bind(Color.html(args[pi_ + 1])))
 	# 확인용: -- --input 이면 1초 뒤 입력칸을 연다(INPUT_TEXT 를 넣어 둠, INPUT_KEY=1 이면 키 넣기 모양). INPUT_DUMP=경로면 2초 뒤 그림을 남긴다.
 	if "--input" in args:
 		get_tree().create_timer(1.0).timeout.connect(func():
@@ -441,6 +449,37 @@ func _tint_step(dt: float) -> void:
 	tint_now = want if tint_now < 0.0 else move_toward(tint_now, want, dt / TINT_TIME)
 	for m in frog.mats:
 		m.set_shader_parameter("tint", smoothstep(0.0, 1.0, tint_now))
+
+
+# 허리 유리병 물약 색: 앱의 다른 기능이 지금 상태를 알리는 표시로 쓴다(입력칸·Claude 로 바꾸지 않음, 사용자 결정).
+# set_potion(색) 으로 켜고 set_potion(null) 로 원래 색. 저장하지 않는다(상태를 보여 주는 것이라 켤 때마다 정함).
+func set_potion(col: Variant) -> void:
+	potion_on = col is Color
+	if potion_on:
+		potion_want = col
+
+
+# 셰이더 bloom·bloom_to 를 TINT_TIME 에 걸쳐 바꾼다. 켜져 있을 때 다른 색을 고르면 지금 색에서 새 색으로 옮겨 간다.
+# 손에 든 병·병 속 공도 같은 재질이라 같이 바뀐다.
+func _potion_step(dt: float) -> void:
+	var want := 1.0 if potion_on else 0.0
+	var col := potion_want
+	if potion_now == want and (want == 0.0 or potion_col == col):
+		return
+	if potion_now < 0.0:
+		potion_now = want
+		potion_col = col
+	else:
+		if potion_now <= 0.0:
+			potion_col = col           # 꺼져 있다 켜면 새 색으로 바로(원래 색에서 번져 나옴)
+		potion_now = move_toward(potion_now, want, dt / TINT_TIME)
+		if want > 0.0:
+			potion_col = potion_col.lerp(col, minf(1.0, dt / TINT_TIME * 3.0))
+			if absf(potion_col.r - col.r) + absf(potion_col.g - col.g) + absf(potion_col.b - col.b) < 0.01:
+				potion_col = col
+	for m in frog.mats:
+		m.set_shader_parameter("bloom", smoothstep(0.0, 1.0, potion_now))
+		m.set_shader_parameter("bloom_to", potion_col)
 
 
 func _typing() -> bool:
@@ -720,6 +759,7 @@ func _process(dt: float) -> void:
 	_prop_step(dt, d != Vector2.ZERO or w > 0.05)
 	_light_step(dt)
 	_tint_step(dt)
+	_potion_step(dt)
 	bubble.follow(_head_top(), _usable(), dt)
 	talk_input.follow(_feet(), _head_top(), _usable(), dt)
 	_face_step(dt, 2 if jump_u >= 0.0 else (1 if run > 0.5 else 0), w < 0.15)
@@ -857,7 +897,8 @@ func _fps_step(dt: float, w: float) -> void:
 
 # godot --path app -- --snapshot : 자세 몇 개를 app/snap/*.png 로 저장하고 끝낸다.
 func _take_snapshots() -> void:
-	get_window().size = Vector2i(roundi(WIN_W * 2), roundi(WIN_H * 2))
+	var sc := float(OS.get_environment("SNAP_SCALE")) if OS.get_environment("SNAP_SCALE") != "" else 2.0
+	get_window().size = Vector2i(roundi(WIN_W * sc), roundi(WIN_H * sc))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://snap"))
 	# [이름, 몸 방향, 걷기, 달리기, 걸음 주기, 점프, 인사(손 흔들기), 눈 감음, 소품(이름), 소품 동작 초(없으면 -1)]
 	var shots := [
@@ -873,6 +914,12 @@ func _take_snapshots() -> void:
 		["vial_touch", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 0.7],
 		["vial_hold", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 2.3],
 	]
+	var pc := OS.get_environment("POTION_COLOR")
+	if pc != "":
+		for m in frog.mats:
+			m.set_shader_parameter("bloom", 1.0)
+			m.set_shader_parameter("bloom_to", Color.html(pc))
+			m.set_shader_parameter("bloom_debug", OS.get_environment("POTION_DEBUG") == "1")
 	for s in shots:
 		model.rotation.y = s[1]
 		model.position.y = _jump_h() * k * s[5]

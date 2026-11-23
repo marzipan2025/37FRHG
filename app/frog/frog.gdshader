@@ -36,7 +36,9 @@ uniform float face_lo = -1.5;          // 금색에서 뺄 얼굴 높이(머리 
 uniform float face_hi = 12.5;
 uniform bool tint_debug = false;
 
-// 유리병 물약 색: 원래 하늘색~보라~분홍 그라데이션을 노랑 쪽으로 모으되 색상 차이를 bloom_spread 만큼 남긴다.
+// 유리병 물약 색: 원래 하늘색~보라~분홍 그라데이션을 bloom_to 쪽으로 모으되 색상 차이를 bloom_spread 만큼 남긴다.
+// bloom_to 는 아무 색이나 된다(37FRHG 는 말로 고른 색, 37RHHG 는 노랑). 손에 든 병·병 속 공도 같은 표시(파랑 0)라 같이 바뀐다.
+// 밝기는 bloom_to 명도 비율(노랑은 예전처럼 ×1.1), 채도는 bloom_to 가 흐릴수록(흰색·회색) 더 따라간다.
 uniform float bloom = 0.0;
 uniform float bloom_from_h = 0.72;
 uniform vec3 bloom_to : source_color = vec3(0.98, 0.80, 0.16);    // 노랑
@@ -125,12 +127,17 @@ void fragment() {
 	if ((bloom > 0.001 || bloom_debug) && COLOR.b < 0.5) {
 		vec3 h = rgb2hsv(c);
 		vec3 ht = rgb2hsv(bloom_to);
-		float w = smoothstep(0.22, 0.32, h.z) * smoothstep(0.12, 0.22, h.y);
+		// 병 옆 로브(같은 보라, 더 어둡고 흐림)가 물드는 것을 막으려고 밝기·채도 문턱을 높였다(예전 0.22~0.32·0.12~0.22).
+		float w = smoothstep(0.30, 0.40, h.z) * smoothstep(0.18, 0.28, h.y);
+		// 병 아래 보라·자홍 액체만(색상 약 0.68~0.96). 위쪽 하늘색(빈 유리, 색상 약 0.55)은 그대로(2026-11-23 사용자 요청).
+		w *= smoothstep(0.62, 0.68, h.x) * (1.0 - smoothstep(0.96, 0.995, h.x));
 		if (bloom_debug) {
 			c = mix(c, vec3(0.0, 1.0, 0.0), w * 0.8);
 		} else {
 			float nh = fract(ht.x + hue_diff(h.x, bloom_from_h) * bloom_spread);
-			vec3 end = hsv2rgb(vec3(nh, clamp(mix(h.y, ht.y, 0.5), 0.0, 1.0), clamp(h.z * 1.1, 0.0, 1.0)));
+			float ns = clamp(mix(h.y, ht.y, mix(0.85, 0.5, smoothstep(0.1, 0.3, ht.y))), 0.0, 1.0);
+			float nv = clamp(h.z * clamp(ht.z / 0.72, 0.15, 1.1), 0.0, 1.0);
+			vec3 end = hsv2rgb(vec3(nh, ns, nv));
 			c = mix(c, mix(c, end, bloom), w);
 		}
 	}
