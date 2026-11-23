@@ -3,8 +3,9 @@ extends Node
 ## 그림은 bubble/froginput.png(936×295, 그림자 포함), 그 안 연보라 네모에 LineEdit 를 얹는다.
 ## 키보드를 받아야 하므로 말풍선 창과 달리 포커스를 받는다(unfocusable·mouse_passthrough 끔).
 ## Enter → submitted(글), Esc 나 아무것도 안 친 채 IDLE_CLOSE 초 → 닫힘. 글을 치기 시작하면 Esc·Enter 전까지 안 닫힌다.
+## 키 넣기(key_mode): 글자를 ●로 가리고, 키를 복사하러 다른 창에 다녀올 수 있게 시간·포커스로 닫지 않는다(Esc·Enter 만).
 
-signal submitted(text: String)
+signal submitted(text: String, key_mode: bool)
 signal closed
 
 const IMG_W := 936.0
@@ -24,6 +25,7 @@ const TEXT_COL := Color(0.30, 0.12, 0.52)          # 진한 보라(2026-11-23 �
 const HINT_COL := Color(0.30, 0.12, 0.52, 0.40)
 const SEL_COL := Color(0.55, 0.40, 0.85, 0.35)
 const HINT := "개구리에게 말 걸기…"
+const KEY_HINT := "Claude 키를 붙여 넣고 Enter"
 const MAX_LEN := 300
 const IDLE_CLOSE := 5.0        # 아무것도 안 친 채 이만큼 지나면 닫힘
 const GAP := 14.0              # 발과 입력칸 몸통 사이(pt). 처음 2 에서 12pt 더 내림
@@ -38,6 +40,7 @@ var screen_scale := 1.0
 var open := false
 var idle := 0.0
 var alpha := 0.0
+var key_mode := false
 
 
 func setup(scale: float, font: Font) -> void:
@@ -108,9 +111,13 @@ func _load_image() -> Image:
 	return null
 
 
-func show_input(feet: Vector2, head: Vector2, usable: Rect2) -> void:
+func show_input(feet: Vector2, head: Vector2, usable: Rect2, for_key := false) -> void:
 	if win == null:
 		return
+	key_mode = for_key
+	edit.secret = for_key
+	edit.placeholder_text = KEY_HINT if for_key else HINT
+	edit.max_length = 400 if for_key else MAX_LEN
 	edit.text = ""
 	idle = 0.0
 	open = true
@@ -137,20 +144,22 @@ func is_open() -> bool:
 
 func _on_submit(t: String) -> void:
 	t = t.strip_edges()
+	edit.text = ""   # 키가 창에 남지 않게
 	close()
 	if t != "":
-		submitted.emit(t)
+		submitted.emit(t, key_mode)
 
 
 func _on_key(e: InputEvent) -> void:
 	if e is InputEventKey and e.pressed and e.keycode == KEY_ESCAPE:
 		edit.accept_event()
+		edit.text = ""
 		close()
 
 
 # 다른 데를 눌러 포커스를 잃으면, 아무것도 안 쳤을 때만 닫는다(치던 글은 남김).
 func _on_focus_out() -> void:
-	if open and edit.text == "" and not edit.has_ime_text():
+	if open and not key_mode and edit.text == "" and not edit.has_ime_text():
 		close()
 
 
@@ -158,7 +167,7 @@ func _on_focus_out() -> void:
 func follow(feet: Vector2, head: Vector2, usable: Rect2, dt: float) -> void:
 	if win == null or not win.visible:
 		return
-	if open and edit.text == "" and not edit.has_ime_text():
+	if open and not key_mode and edit.text == "" and not edit.has_ime_text():
 		idle += dt
 		if idle >= IDLE_CLOSE:
 			close()

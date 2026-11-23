@@ -137,6 +137,8 @@ var walk_item := -1
 var updater: Node
 var bubble: Node
 var talk_input: Node   # 말 거는 입력칸(talk_input.gd)
+var keystore: Node     # Claude API 키(키체인, keystore.gd)
+var talk: Node         # Claude 와 말하기(talk.gd)
 var click_wait := -1.0  # 클릭 뒤 두 번째 클릭을 기다리는 남은 시간. 0 아래로 가면 한 번 클릭
 const DOUBLE_CLICK := 0.28               # bubble.gd: 머리 위 말풍선(say(글))
 
@@ -157,6 +159,9 @@ func _ready() -> void:
 	_setup_window()
 	updater = load("res://updater.gd").new()
 	add_child(updater)
+	keystore = load("res://keystore.gd").new()
+	add_child(keystore)
+	keystore.saved.connect(func(_ok, msg): bubble.say(msg))
 	_setup_menu()
 	bubble = load("res://bubble.gd").new()
 	add_child(bubble)
@@ -165,6 +170,16 @@ func _ready() -> void:
 	add_child(talk_input)
 	talk_input.setup(screen_scale, bubble.font)
 	talk_input.submitted.connect(_on_talk)
+	talk = load("res://talk.gd").new()
+	add_child(talk)
+	talk.setup(keystore)
+	talk.answered.connect(_on_answer)
+	# 확인용: -- --ask "문장" 이면 2초 뒤 그 말을 보내고 대답을 찍는다(BUBBLE_DUMP 면 대답 뒤 말풍선 그림).
+	var ai := args.find("--ask")
+	if ai >= 0 and ai + 1 < args.size():
+		get_tree().create_timer(2.0).timeout.connect(_on_talk.bind(args[ai + 1], false))
+	if not snapshot and not demo:
+		get_tree().create_timer(1.5).timeout.connect(keystore.offer_import)
 	if "--wander" in args:
 		_set_wander(true)
 	# 확인용: -- --say "문장" 이면 1초 뒤 말풍선을 띄운다(아직 말하게 하는 곳은 없다. AI 붙일 때 씀).
@@ -174,10 +189,10 @@ func _ready() -> void:
 		var dump := OS.get_environment("BUBBLE_DUMP")
 		if dump != "":
 			get_tree().create_timer(2.0).timeout.connect(func(): bubble.dump(dump))
-	# 확인용: -- --input 이면 1초 뒤 입력칸을 연다(INPUT_TEXT 를 넣어 둠). INPUT_DUMP=경로면 2초 뒤 그림을 남긴다.
+	# 확인용: -- --input 이면 1초 뒤 입력칸을 연다(INPUT_TEXT 를 넣어 둠, INPUT_KEY=1 이면 키 넣기 모양). INPUT_DUMP=경로면 2초 뒤 그림을 남긴다.
 	if "--input" in args:
 		get_tree().create_timer(1.0).timeout.connect(func():
-			_open_input()
+			talk_input.show_input(_feet(), _head_top(), _usable(), OS.get_environment("INPUT_KEY") == "1")
 			talk_input.edit.insert_text_at_caret(OS.get_environment("INPUT_TEXT")))
 		var idump := OS.get_environment("INPUT_DUMP")
 		if idump != "":
@@ -335,7 +350,8 @@ func _place() -> void:
 
 
 func _zoom_step(dt: float) -> void:
-	var target := ZOOM_MAX if Input.is_physical_key_pressed(KEY_Z) else 1.0
+	# 입력칸에 글을 치는 동안은 z 가 글자라 확대하지 않는다(키 상태는 창과 상관없이 전역이라 직접 막는다).
+	var target := ZOOM_MAX if Input.is_physical_key_pressed(KEY_Z) and not _typing() else 1.0
 	if zoom_k == target and zoom_v == 0.0:
 		return
 	var n := 4
@@ -373,6 +389,7 @@ func _setup_menu() -> void:
 	popup_menu = menu
 	walk_item = NativeMenu.add_item(menu, "", func(_tag): _set_wander(not wander))
 	NativeMenu.add_item(menu, "말 걸기…", func(_tag): _open_input())
+	NativeMenu.add_item(menu, "Claude 키 넣기…", func(_tag): _ask_key())
 	NativeMenu.add_separator(menu)
 	NativeMenu.add_item(menu, "업데이트 확인…", func(_tag): updater.check(true))
 	NativeMenu.add_separator(menu)
@@ -415,13 +432,40 @@ func _open_input() -> void:
 	if talk_input == null or snapshot:
 		return
 	click_wait = -1.0
+	if not keystore.has_key():
+		bubble.say("먼저 Claude API 키를 넣어 주세요.")
+		_ask_key()
+		return
 	talk_input.show_input(_feet(), _head_top(), _usable())
 
 
-# 입력칸에서 Enter 로 보낸 글. 아직 AI 가 없어서 받았다는 말만 한다(AI 붙일 때 여기서 Claude 를 부른다).
-func _on_talk(text: String) -> void:
-	print("talk: ", text)
-	bubble.say("아직은 말을 배우는 중이에요. 곧 대답할게요!")
+# 메뉴바 "Claude 키 넣기…": 입력칸을 키 넣기로 연다(글자 가림).
+func _ask_key() -> void:
+	if talk_input == null or snapshot:
+		return
+	click_wait = -1.0
+	talk_input.show_input(_feet(), _head_top(), _usable(), true)
+
+
+# 입력칸에서 Enter 로 보낸 글. 키 넣기면 키체인으로(키는 로그에 찍지 않는다).
+# 말은 talk.gd 가 Claude(Haiku)에 보내고, 기다리는 동안 머리 위에 "…"를 띄운다.
+func _on_talk(text: String, key_mode: bool) -> void:
+	if key_mode:
+		keystore.set_key(text)
+		return
+	if talk.is_busy():
+		return
+	bubble.say("…", 40.0)
+	talk.reply(text)
+
+
+# 대답을 머리 위에 띄운다. 길수록 조금 더 오래(5~12초).
+func _on_answer(text: String) -> void:
+	print("frog: ", text)
+	bubble.say(text, clampf(4.0 + text.length() * 0.09, 5.0, 12.0))
+	var dump := OS.get_environment("BUBBLE_DUMP")
+	if dump != "":
+		get_tree().create_timer(0.6).timeout.connect(func(): bubble.dump(dump))
 
 
 func _menu_icon() -> Texture2D:
