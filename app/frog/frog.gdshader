@@ -1,5 +1,7 @@
 // 개구리 마법사(37FRHG) 재질. 소녀의 face.gdshader 와 따로 두되, main.gd 가 넘기는 값 이름은 같다
-// (head_inv·blink·happy·tint·bloom). 입(mouth)은 개구리에 없어서 받아도 쓰지 않는다.
+// (head_inv·blink·happy·tint·bloom·mouth).
+// - 입 벌리기(mouth, 2026-11-23): frog.gd 가 입선·턱 밑을 잘라 아래턱 점을 UV2.x(0~1)로 표시하고 입 안 면(UV.x -3 입천장, -4 혀)을
+//   덧붙였다. 정점 셰이더가 머리 좌표에서 아래턱을 경첩(입꼬리 안쪽 가로축)으로 돌린다. 윗입술 위는 움직이지 않는다.
 // - 눈 깜빡임: 개구리 눈은 머리 위로 튀어나온 공이라 눈알 공 위에 위·아래 눈꺼풀을 칠한다.
 //   소녀의 웃는 눈(happy)도 감은 눈으로 대신한다.
 // - tint(말 모델이 Sonnet): 의상(모자·로브) 보라 → 검정, 의상의 노란(금) 장식 → 터키색(2026-11-22, 처음엔 핑크, 그다음 밝은 금색).
@@ -63,6 +65,26 @@ uniform vec2 belt_y = vec2(0.352, 0.396);
 // 방향광만 light_gain 배로 대비를 키운다: 밝은 쪽은 더 밝게, 그늘 쪽은 더 어둡게(평균은 그대로).
 uniform float light_gain = 2.0;
 
+// 입 벌리기
+uniform float mouth = 0.0;             // 0 다문 입 ~ 1 크게 벌린 입
+uniform float jaw_deg = 22.0;          // 다 벌렸을 때 아래턱 각도
+uniform vec2 jaw_hinge = vec2(4.5, 5.0);   // 경첩 (y, z) cm, frog.gd JAW_HINGE 와 같게
+// 아랫입술 끝 둥글리기: 바깥 피부(아래로)에서 입술 위를 넘어 안쪽 아래로 말려 들어가는 반원(반지름 rim_r).
+// 피부는 깊이 rim_r 안쪽이 호의 0~45°, 바닥은 입술 끝에서 호 길이만큼이 45~180°(안쪽으로 내려감), 그 뒤 2.5cm 동안
+// 원래 바닥으로 돌아간다. UV2.y = 입술 끝에서의 거리(cm). 모서리 점은 양쪽 모두 45° 자리라 서로 붙어 있다.
+// (처음엔 90° 모서리만 둥글려서 옆에서 보면 붉은 바닥이 혀처럼 앞으로 넓게 보였다.)
+// 입꼬리 쪽(|x| rim_x 밖)은 줄인다(그쪽은 피부가 옆을 봐서 앞뒤 방향 호가 맞지 않음). 벌릴수록 바로 둥글어진다.
+uniform float rim_r = 1.2;
+uniform bool mouth_debug = false;      // 입 확인: 입천장 파랑, 바닥 빨강, 아래턱 피부 초록(둥글리는 곳 노랑)
+uniform vec2 rim_x = vec2(6.0, 10.5);
+// 입 안은 어둡고 채도 높게(2026-11-23 사용자 요청). 아랫면 가운데에 앞이 뾰족한 쐐기 모양 혀를 더 어두운 빨강으로 은은하게.
+uniform vec3 palate_col : source_color = vec3(0.34, 0.03, 0.08);   // 입천장
+uniform vec3 floor_col : source_color = vec3(0.58, 0.08, 0.17);    // 입 바닥
+uniform vec3 tongue_col : source_color = vec3(0.44, 0.02, 0.07);   // 쐐기 혀
+uniform vec2 tongue_w = vec2(0.6, 5.0);    // 혀 반폭 cm: 앞 끝 ~ 안쪽
+uniform float tongue_amt = 0.7;
+uniform vec3 throat_col : source_color = vec3(0.09, 0.0, 0.02);    // 목구멍(경첩 쪽)
+
 varying vec3 hp;
 
 void vertex() {
@@ -74,6 +96,35 @@ void vertex() {
 	}
 	vec4 w = MODEL_MATRIX * vec4(VERTEX, 1.0);
 	hp = (head_inv * w).xyz * 100.0 * unit_scale;
+	if (mouth > 0.001 && UV2.x > 0.0) {
+		vec3 hb = hp;
+		float arc_len = rim_r * radians(135.0);
+		if ((UV.x < -3.5 && UV2.y < arc_len + 2.5) || (UV.x > -3.5 && UV2.y < rim_r)) {
+			float wr = (1.0 - smoothstep(rim_x.x, rim_x.y, abs(hp.x))) * min(1.0, mouth * 3.0);
+			float e = UV2.y;
+			vec2 off;   // (dy, dz)
+			if (UV.x < -3.5) {
+				float ph = radians(45.0 + 135.0 * min(e, arc_len) / arc_len);
+				off = vec2(-rim_r + rim_r * sin(ph), -rim_r + rim_r * cos(ph) + min(e, arc_len));
+				off *= 1.0 - smoothstep(0.0, 2.5, e - arc_len);
+			} else {
+				float ph = radians(45.0 * (1.0 - e / rim_r));
+				off = vec2(-rim_r + rim_r * sin(ph) + e, -rim_r + rim_r * cos(ph));
+			}
+			hb += vec3(0.0, off * wr);
+		}
+		float a = radians(jaw_deg) * mouth * UV2.x;
+		float ca = cos(a);
+		float sa = sin(a);
+		vec2 d = vec2(hb.y - jaw_hinge.x, hb.z - jaw_hinge.y);
+		d = vec2(d.x * ca - d.y * sa, d.x * sa + d.y * ca);   // 앞(+z)이 아래(-y)로
+		vec3 h2 = vec3(hb.x, jaw_hinge.x + d.x, jaw_hinge.y + d.y);
+		mat4 head_m = inverse(head_inv);
+		VERTEX = (inverse(MODEL_MATRIX) * (head_m * vec4(h2 * 0.01 / unit_scale, 1.0))).xyz;
+		vec3 n = mat3(head_inv) * (mat3(MODEL_MATRIX) * NORMAL);
+		n = vec3(n.x, n.y * ca - n.z * sa, n.y * sa + n.z * ca);
+		NORMAL = normalize(inverse(mat3(MODEL_MATRIX)) * (mat3(head_m) * n));
+	}
 }
 
 vec3 rgb2hsv(vec3 c) {
@@ -102,7 +153,19 @@ void fragment() {
 	vec3 c = (texture(albedo_tex, UV) * albedo_col).rgb;
 	// frog.gd 가 덧붙인 것: UV x -2 = 앞 병 뒤 로브 구멍 막는 판(로브 보라),
 	// UV x -1 = 병 속을 메우는 공(y = 병 가운데 기준 높이 -1~1): 아래 진보라 → 자홍 → 연보라 → 하늘색(텍스처에서 잰 병 색).
-	if (UV.x < -1.5) {
+	if (UV.x < -2.5) {
+		// 입 안: 입천장(-3)·혀(-4), 경첩 쪽으로 갈수록 목구멍 색
+		if (UV.x < -3.5) {
+			c = floor_col;
+			// 혀는 경첩(UV.y 1)에서 입술 쪽으로 60% 까지(앞 끝 UV.y 0.4, 2026-11-23 사용자 요청)
+			float hw = mix(tongue_w.x, tongue_w.y, smoothstep(0.4, 0.9, UV.y));
+			float tm = (1.0 - smoothstep(hw - 0.5, hw + 0.5, abs(hp.x))) * smoothstep(0.38, 0.46, UV.y);
+			c = mix(c, tongue_col, tm * tongue_amt);
+			c = mix(c, throat_col, smoothstep(0.45, 1.0, UV.y));
+		} else {
+			c = mix(palate_col, throat_col, smoothstep(0.25, 1.0, UV.y));
+		}
+	} else if (UV.x < -1.5) {
 		c = robe_col;
 	} else if (UV.x < -0.5) {
 		float t = UV.y;
@@ -182,6 +245,11 @@ void fragment() {
 			float ln = max(cover(abs(du) - line_w), cover(abs(dl) - line_w * 0.7));
 			c = mix(c, lid_line, ln * step(dist, eye_r + 0.25));
 		}
+	}
+	if (mouth_debug) {
+		if (UV.x < -3.5) c = vec3(1.0, 0.0, 0.0);
+		else if (UV.x < -2.5) c = vec3(0.0, 0.2, 1.0);
+		else if (UV2.x > 0.0) c = UV2.y < rim_r ? vec3(1.0, 0.9, 0.0) : vec3(0.0, 0.8, 0.2);
 	}
 	ALBEDO = c;
 	ROUGHNESS = 1.0;

@@ -75,6 +75,32 @@ var pr_q := {}
 var prop_on := false
 
 # 자세(37RHHG _pose 를 옮기고 개구리에 맞춘 것)
+# 입 벌리기(2026-11-23). 머리 좌표 cm(머리 뼈 원점, 기본 자세 메시 축: 캐릭터 왼쪽 x·위 y·앞 z).
+# 리깅에 턱 뼈가 없어서 메시를 두 번 잘라(입선·턱 밑) 아래턱 점을 UV2.x = 1 로 표시하고, 셰이더가 경첩을 축으로 돌린다.
+# - 입선: 텍스처 주황 선 가운데(mm.gd 로 잼: 가운데 y 4.6, z 18.5, 입꼬리 x ±12 에서 y 5.3·z 8.5). 사용자 요청대로
+#   거의 곧은 선에 입꼬리만 약하게 올라가는 곡선으로 자른다(삼각형을 곡선 위에서 나눠 톱니 없이). 위는 움직이지 않는다.
+# - 턱 밑: 크림색 턱과 옷깃(가운데 y -4, 옆으로 x 1cm 마다 0.5cm 올라가는 V, mm2.gd)의 경계 바로 위에서 잘라
+#   턱만 움직이고 목·옷깃은 그대로.
+# - 입 안: 자른 입선에서 경첩까지 윗면(입천장, UV.x -3)·아랫면(혀, UV.x -4, 턱과 같이 돈다)을 덧붙인다(UV.y = 입선 0 ~ 경첩 1).
+const LIP_Y := 4.65
+const LIP_RISE := 0.75      # 입꼬리에서 더 올라가는 높이
+const LIP_FLAT := 8.5       # |x| 이 안은 곧은 선
+const LIP_END := 12.4       # 입꼬리(이 밖은 자르지 않음)
+const LIP_ZMIN := 6.5
+const CHIN_Y := -3.6        # 가운데 턱 밑(옷깃 위 0.4cm)
+const CHIN_SLOPE := 0.5
+const JAW_HINGE := Vector2(4.5, 5.0)   # 경첩 (y, z): 입꼬리보다 조금 뒤 안쪽. 처음 (5.0, 8.5)·28° 는 턱 밑이 크게
+                                       # 뒤로 젖혀져 옷깃 뒤로 숨고 아래턱이 얇은 판처럼 보였다(2026-11-23 비교해서 22° 로)
+const JAW_SIDE := Vector2(6.0, 8.5)    # 이 z 보다 뒤(옆머리)는 따라가지 않음
+const JAW_X := Vector2(12.4, 13.6)     # 이 |x| 밖은 따라가지 않음
+# 입 안 면의 단면: 입선에서 경첩까지 오목하게(sin^1.5). 아랫면은 BOWL cm 내려가고, 윗면은 DOME cm 올라간다.
+# 아랫입술 끝은 셰이더가 벌릴 때 둥글린다(rim_r): UV2.y 에 입술 끝에서의 거리(cm)를 넣어 둔다
+# (아래턱 피부: 입선 아래 깊이, 입 바닥: 입선에서 안쪽으로 간 거리).
+const MOUTH_BOWL := 1.4
+const MOUTH_DOME := 0.8
+const MOUTH_ROWS := 10
+const MOUTH_IN_X := 0.7
+
 const ARM_DOWN := 50.0      # T자 기본 자세에서 팔을 내리는 각도(더 내리면 손이 허리 책에 닿음)
 const RUN_KNEE := 52.0      # 달리기 무릎(75면 뒤로 찬 발이 로브 단을 뚫음)
 const RUN_ARM_OUT := 10.0   # 달리기 때 팔을 더 벌림(손이 책에 닿아서)
@@ -246,9 +272,178 @@ func _fix_legs(n: Node, sk: Skeleton3D) -> void:
 			a[Mesh.ARRAY_COLOR] = vc
 			_prop_split(a, img, hips, "book", 0.0)
 			_prop_split(a, img, hips, "vial", 0.5)
+			_mouth_cut(a, to_mesh * sk.get_bone_global_rest(sk.find_bone("Head")).origin)
 			out.add_surface_from_arrays(mi.mesh.surface_get_primitive_type(sf), a)
 			out.surface_set_material(sf, mi.mesh.surface_get_material(sf))
 		mi.mesh = out
+
+
+func _lip_y(x: float) -> float:
+	var t := maxf(0.0, (absf(x) - LIP_FLAT) / (LIP_END - LIP_FLAT))
+	return LIP_Y + LIP_RISE * t * t
+
+
+func _chin_y(x: float) -> float:
+	return CHIN_Y + CHIN_SLOPE * (sqrt(x * x + 1.0) - 1.0)
+
+
+# 입선·턱 밑을 자르고 아래턱 표시(UV2.x)와 입 안 면을 만든다. ho = 머리 뼈 원점(메시 좌표 m).
+func _mouth_cut(a: Array, ho: Vector3) -> void:
+	var nv: int = (a[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	var uv2 := PackedVector2Array()
+	uv2.resize(nv)
+	a[Mesh.ARRAY_TEX_UV2] = uv2
+	var hc := func(k: int) -> Vector3: return (a[Mesh.ARRAY_VERTEX][k] - ho) * 100.0
+	var lip_f := func(h: Vector3) -> float: return h.y - _lip_y(h.x)
+	var lip_zone := func(h: Vector3) -> bool: return h.z > LIP_ZMIN and absf(h.x) < LIP_END and absf(h.y - LIP_Y) < 4.0
+	var chin_f := func(h: Vector3) -> float: return h.y - _chin_y(h.x)
+	var chin_zone := func(h: Vector3) -> bool: return h.z > 4.0 and absf(h.x) < LIP_END and h.y > -8.0 and h.y < 4.0
+	var lip_side: Dictionary = _cut(a, hc, lip_f, lip_zone)
+	var chin_side: Dictionary = _cut(a, hc, chin_f, chin_zone)
+	# 아래턱 표시: 입선 아래 · 턱 밑 선 위 · 옆머리·뒤가 아닌 곳
+	var v: PackedVector3Array = a[Mesh.ARRAY_VERTEX]
+	uv2 = a[Mesh.ARRAY_TEX_UV2]
+	for k in v.size():
+		var h: Vector3 = hc.call(k)
+		var below: bool = lip_side[k] < 0 if lip_side.has(k) else lip_f.call(h) < 0.0
+		var above: bool = chin_side[k] > 0 if chin_side.has(k) else chin_f.call(h) > 0.0
+		var w := 0.0
+		if below and above:
+			w = smoothstep(JAW_SIDE.x, JAW_SIDE.y, h.z) * (1.0 - smoothstep(JAW_X.x, JAW_X.y, absf(h.x)))
+		uv2[k] = Vector2(w, maxf(0.0, _lip_y(h.x) - h.y) if w > 0.0 else 99.0)
+	a[Mesh.ARRAY_TEX_UV2] = uv2
+	# 입 안: 입선 자른 점(위 복사본·아래 복사본)을 x 순서로 이어 경첩까지 띠를 만든다.
+	var up := []
+	var lo := []
+	for k in lip_side:
+		(up if lip_side[k] > 0 else lo).append(k)
+	_mouth_wall(a, hc, ho, up, -3.0, MOUTH_DOME, 0.0)
+	_mouth_wall(a, hc, ho, lo, -4.0, -MOUTH_BOWL, 1.0)
+
+
+# 입선 점들(x 순)에서 경첩 선까지 띠. bulge 는 단면이 부푸는 높이(cm, 아랫면은 음수 = 오목하게 아래로).
+# 단면 높이 bulge·sin(πt)^0.5: 입술에서 거의 수직으로 꺾여 들어가 둥글게 경첩에 닿는다. 아랫면은 턱과 같이 돈다(jaw = 1).
+func _mouth_wall(a: Array, hc: Callable, ho: Vector3, pts: Array, tag: float, bulge: float, jaw: float) -> void:
+	pts.sort_custom(func(i, j): return hc.call(i).x < hc.call(j).x)
+	var rows := MOUTH_ROWS
+	var base: int = (a[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	var prof := func(h: Vector3, t: float) -> Vector3:
+		# 경첩 쪽 끝은 안쪽으로 모은다(x 0.7배): 입꼬리 점을 같은 x 로 곧장 뒤로 보내면 볼 피부 밖으로 나와 붉게 비쳤다.
+		var hinge := Vector3(h.x * MOUTH_IN_X, JAW_HINGE.x, minf(JAW_HINGE.y, h.z))
+		# 입꼬리 쪽(깊이가 얕은 곳)은 덜 부풀린다
+		var depth := clampf((h.z - hinge.z) / 4.0, 0.0, 1.0)
+		return h.lerp(hinge, t) + Vector3(0.0, bulge * depth * pow(sin(PI * t), 1.5), 0.0)
+	for i in pts:
+		var h: Vector3 = hc.call(i)
+		var span := h.distance_to(Vector3(h.x * MOUTH_IN_X, JAW_HINGE.x, minf(JAW_HINGE.y, h.z)))
+		for r in rows:
+			# 입술 쪽 줄을 촘촘히(둥글린 끝이 매끄럽게)
+			var t := pow(float(r) / (rows - 1), 1.8)
+			var p: Vector3 = prof.call(h, t)
+			# 법선: 단면 접선(yz)에 수직, 입 안쪽(윗면 아래·아랫면 위)을 보게
+			var tg: Vector3 = prof.call(h, minf(t + 0.02, 1.0)) - prof.call(h, maxf(t - 0.02, 0.0))
+			var n := Vector3(0.0, tg.z, -tg.y).normalized()
+			if (n.y > 0.0) != (bulge < 0.0):
+				n = -n
+			# 아랫면은 입선 점과 같은 비율로 돈다(입꼬리 쪽은 피부처럼 덜 돌아 볼을 뚫지 않게)
+			var jw: float = (a[Mesh.ARRAY_TEX_UV2][i] as Vector2).x if jaw > 0.0 else 0.0
+			_copy_pt(a, i, ho + p * 0.01, n, Vector2(tag, t), Vector2(jw, t * span if jw > 0.0 else 99.0))
+	var idx: PackedInt32Array = a[Mesh.ARRAY_INDEX]
+	for q in pts.size() - 1:
+		for r in rows - 1:
+			var a0 := base + q * rows + r
+			var b0 := base + (q + 1) * rows + r
+			idx.append_array([a0, b0, a0 + 1, a0 + 1, b0, b0 + 1])
+	a[Mesh.ARRAY_INDEX] = idx
+
+
+# 점 i 의 뼈·색을 빌려 새 점을 붙인다.
+func _copy_pt(a: Array, i: int, p: Vector3, n: Vector3, uv: Vector2, uv2: Vector2) -> void:
+	var per: int = (a[Mesh.ARRAY_WEIGHTS] as PackedFloat32Array).size() / (a[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	a[Mesh.ARRAY_VERTEX].append(p)
+	a[Mesh.ARRAY_NORMAL].append(n)
+	a[Mesh.ARRAY_TEX_UV].append(uv)
+	a[Mesh.ARRAY_TEX_UV2].append(uv2)
+	a[Mesh.ARRAY_COLOR].append(a[Mesh.ARRAY_COLOR][i])
+	if a[Mesh.ARRAY_TANGENT] != null:
+		var t: PackedFloat32Array = a[Mesh.ARRAY_TANGENT]
+		t.append_array([t[i * 4], t[i * 4 + 1], t[i * 4 + 2], t[i * 4 + 3]])
+		a[Mesh.ARRAY_TANGENT] = t
+	var bo = a[Mesh.ARRAY_BONES]
+	var we: PackedFloat32Array = a[Mesh.ARRAY_WEIGHTS]
+	for c in per:
+		bo.append(bo[i * per + c])
+		we.append(we[i * per + c])
+	a[Mesh.ARRAY_BONES] = bo
+	a[Mesh.ARRAY_WEIGHTS] = we
+
+
+# 면 f(h)=0 을 따라 zone 안 삼각형을 나눈다. 가르는 변마다 새 점을 위(+)·아래(-) 두 벌 만든다(서로 떨어질 수 있게).
+# 돌려주는 것: {새 점 번호: +1 또는 -1}
+func _cut(a: Array, hc: Callable, f: Callable, zone: Callable) -> Dictionary:
+	var v: PackedVector3Array = a[Mesh.ARRAY_VERTEX]
+	var n0 := v.size()
+	var fv := PackedFloat32Array()
+	fv.resize(n0)
+	for k in n0:
+		var x: float = f.call(hc.call(k))
+		fv[k] = x if absf(x) > 1e-4 else 1e-4
+	var idx: PackedInt32Array = a[Mesh.ARRAY_INDEX]
+	var out := PackedInt32Array()
+	var side := {}
+	var edges := {}
+	for t in range(0, idx.size(), 3):
+		var tri := [idx[t], idx[t + 1], idx[t + 2]]
+		var s0 := fv[tri[0]] > 0.0
+		var s1 := fv[tri[1]] > 0.0
+		var s2 := fv[tri[2]] > 0.0
+		var cen: Vector3 = (hc.call(tri[0]) + hc.call(tri[1]) + hc.call(tri[2])) / 3.0
+		if (s0 == s1 and s1 == s2) or not zone.call(cen):
+			out.append_array(tri)
+			continue
+		# 혼자 다른 쪽에 있는 점 L 이 맨 앞에 오게 돌린다(감는 방향 유지).
+		var rot := 0
+		if s1 != s0 and s1 != s2:
+			rot = 1
+		elif s2 != s0 and s2 != s1:
+			rot = 2
+		var L: int = tri[rot]
+		var B: int = tri[(rot + 1) % 3]
+		var C: int = tri[(rot + 2) % 3]
+		var e1: Array = _edge_pt(a, fv, edges, side, L, B)
+		var e2: Array = _edge_pt(a, fv, edges, side, L, C)
+		var lp := fv[L] > 0.0
+		var l1: int = e1[0] if lp else e1[1]
+		var l2: int = e2[0] if lp else e2[1]
+		var o1: int = e1[1] if lp else e1[0]
+		var o2: int = e2[1] if lp else e2[0]
+		out.append_array([L, l1, l2, o1, B, C, o1, C, o2])
+	a[Mesh.ARRAY_INDEX] = out
+	return side
+
+
+# 변 i-j 위 f=0 점(위 복사본, 아래 복사본). 같은 변은 이웃 삼각형과 나눠 쓴다.
+func _edge_pt(a: Array, fv: PackedFloat32Array, edges: Dictionary, side: Dictionary, i: int, j: int) -> Array:
+	var key := Vector2i(mini(i, j), maxi(i, j))
+	if edges.has(key):
+		return edges[key]
+	var t := fv[i] / (fv[i] - fv[j])
+	var near := i if t < 0.5 else j
+	var v: PackedVector3Array = a[Mesh.ARRAY_VERTEX]
+	var nr: PackedVector3Array = a[Mesh.ARRAY_NORMAL]
+	var uv: PackedVector2Array = a[Mesh.ARRAY_TEX_UV]
+	var uv2: PackedVector2Array = a[Mesh.ARRAY_TEX_UV2]
+	var p := v[i].lerp(v[j], t)
+	var n := nr[i].lerp(nr[j], t).normalized()
+	var u := uv[i].lerp(uv[j], t)
+	var pair := []
+	for sgn in [1, -1]:
+		_copy_pt(a, near, p, n, u, uv2[near])
+		var k: int = (a[Mesh.ARRAY_VERTEX] as PackedVector3Array).size() - 1
+		side[k] = sgn
+		pair.append(k)
+	edges[key] = pair
+	return pair
 
 
 func _robe(col: Color) -> bool:

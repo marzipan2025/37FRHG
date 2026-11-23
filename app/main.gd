@@ -150,6 +150,17 @@ var actions: Node      # 개구리가 맥에서 하는 일(Claude 도구, action
 # 입력칸에서 한글을 치면 입력기가 W(ㅈ)·S(ㄴ) 같은 키의 뗌을 먹어 "계속 눌림"으로 남았다 → 입력칸을 닫으면
 # 캐릭터가 화면 위로 끝까지 걸어가 멈추고 키도 안 먹었다(2026-11-23). 창이 포커스를 잃거나 입력칸을 열면 비운다.
 var held := {}
+# 말하는 입(촉새처럼 빠르게 재잘대는 느낌, 2026-11-23 사용자 요청): 대답 글자를 따라 입을 여닫는다.
+# 글자 하나 CHAT_SYL 초(그 안에서 빠르게 열었다 닫음, 여는 정도는 글자마다 조금씩 다르게), 띄어쓰기는 짧게 다물고,
+# 쉼표·마침표·물음표 등은 조금 길게 다문다. 글이 길면 CHAT_MAX 초까지만.
+const CHAT_SYL := Vector2(0.156, 0.216)  # 처음 0.075~0.11 은 너무 빨랐고, 0.13~0.18 에서 20% 더 느리게
+const CHAT_OPEN := Vector2(0.65, 1.0)    # 처음 0.35~0.9 는 덜 벌어져 보였음
+const CHAT_SPACE := 0.084
+const CHAT_PUNCT := 0.36
+const CHAT_MAX := 8.0
+const DEMO_LINE := "안녕하세요! 저는 맥 화면 위를 걸어 다니는 개구리 마법사예요. 오늘 날씨가 참 좋네요."
+var mouth_demo := false       # 확인용 -- --mouth: 위 문장을 되풀이해서 말하는 입
+var chat: Array = []          # [시작, 끝, 여는 정도] 목록(clock 기준). 여는 정도 0 은 다문 입
 var click_wait := -1.0  # 클릭 뒤 두 번째 클릭을 기다리는 남은 시간. 0 아래로 가면 한 번 클릭
 const DOUBLE_CLICK := 0.28               # bubble.gd: 머리 위 말풍선(say(글))
 
@@ -163,6 +174,7 @@ func _ready() -> void:
 	snapshot = "--snapshot" in args
 	demo = "--demo" in args
 	prop_test = "--props" in args
+	mouth_demo = "--mouth" in args
 	_build_scene()
 	if snapshot:
 		_take_snapshots()
@@ -525,9 +537,45 @@ func _on_talk(text: String, key_mode: bool) -> void:
 	talk.reply(text)
 
 
+# 글자를 따라 입 여닫기 순서를 만든다([시작, 끝, 여는 정도], clock 기준). _chat_step 이 재생한다.
+func _chatter(text: String) -> void:
+	chat.clear()
+	var t := clock
+	for ch in text:
+		if t - clock > CHAT_MAX:
+			break
+		var d := 0.0
+		var amt := 0.0
+		if ch == " " or ch == "\n":
+			d = CHAT_SPACE
+		elif ch in ",.!?…~;:":
+			d = CHAT_PUNCT
+		else:
+			d = randf_range(CHAT_SYL.x, CHAT_SYL.y)
+			amt = randf_range(CHAT_OPEN.x, CHAT_OPEN.y)
+		chat.append([t, t + d, amt])
+		t += d
+
+
+# 지금 글자 칸 안에서 사인 한 번(빠르게 열었다 닫음). 다 말하면 다문다.
+func _chat_step() -> void:
+	if face_mat == null:
+		return
+	if mouth_demo and (chat.is_empty() or clock > chat[-1][1] + 0.6):
+		_chatter(DEMO_LINE)
+	while not chat.is_empty() and clock > chat[0][1]:
+		chat.pop_front()
+	var m := 0.0
+	if not chat.is_empty() and clock >= chat[0][0]:
+		var c: Array = chat[0]
+		m = c[2] * sin(PI * clampf((clock - c[0]) / (c[1] - c[0]), 0.0, 1.0))
+	face_mat.set_shader_parameter("mouth", m)
+
+
 # 대답을 머리 위에 띄운다. 길수록 조금 더 오래(5~12초).
 func _on_answer(text: String) -> void:
 	print("frog: ", text)
+	_chatter(text)
 	bubble.say(text, clampf(4.0 + text.length() * 0.09, 5.0, 12.0))
 	var dump := OS.get_environment("BUBBLE_DUMP")
 	if dump != "":
@@ -874,6 +922,7 @@ func _face_step(dt: float, act: int, idle: bool) -> void:
 	var closed := eyes_left > 0.0 or blink_left > 0.0 or (greet > 0.2 and greet_eyes)
 	if face_mat:
 		face_mat.set_shader_parameter("blink", 1.0 if closed else 0.0)
+		_chat_step()
 
 
 # ---------------------------------------------------------------- 동작
@@ -898,7 +947,8 @@ func _face_update() -> void:
 
 func _fps_step(dt: float, w: float) -> void:
 	var active := w > 0.02 or anim_speed > 2.0 or jump_u >= 0.0 or dragging or zoom_v != 0.0 \
-		or zoom_k != 1.0 or greet_t >= 0.0 or prop_t >= 0.0 or absf(angle_difference(yaw, target_yaw)) > 0.01
+		or zoom_k != 1.0 or greet_t >= 0.0 or prop_t >= 0.0 or absf(angle_difference(yaw, target_yaw)) > 0.01 \
+		or not chat.is_empty() or mouth_demo
 	calm_t = 0.0 if active else calm_t + dt
 	var want := FPS_IDLE if calm_t > FPS_CALM else FPS_ACTIVE
 	if Engine.max_fps != want:
@@ -926,12 +976,20 @@ func _take_snapshots() -> void:
 		["vial_touch", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 0.7],
 		["vial_hold", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 2.3],
 	]
+	if OS.get_environment("MOUTH") != "":
+		face_mat.set_shader_parameter("mouth", float(OS.get_environment("MOUTH")))
+		face_mat.set_shader_parameter("mouth_debug", OS.get_environment("MOUTH_DEBUG") == "1")
 	var pc := OS.get_environment("POTION_COLOR")
 	if pc != "":
 		for m in frog.mats:
 			m.set_shader_parameter("bloom", 1.0)
 			m.set_shader_parameter("bloom_to", Color.html(pc))
 			m.set_shader_parameter("bloom_debug", OS.get_environment("POTION_DEBUG") == "1")
+	# MOUTH 가 있으면 입 확인용으로 서 있는 모습만 정면·3/4·옆에서
+	if OS.get_environment("MOUTH") != "":
+		shots = [["mouth_front", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+			["mouth_34", -0.6, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+			["mouth_side", -PI * 0.5, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0]]
 	for s in shots:
 		model.rotation.y = s[1]
 		model.position.y = _jump_h() * k * s[5]
