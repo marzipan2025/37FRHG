@@ -17,6 +17,11 @@ const MODEL_TOOL := {"name": "set_model",
 	"description": "사용자가 말하는 AI 모델을 바꿔 달라고 할 때 부른다. 고를 수 있는 것은 haiku(빠르고 싸다, 기본)와 sonnet(더 똑똑하지만 비용이 약 20배)뿐이다. 다른 모델(Opus 등)을 원하면 부르지 말고 Haiku·Sonnet 만 된다고 말한다.",
 	"input_schema": {"type": "object", "properties": {
 		"model": {"type": "string", "enum": ["haiku", "sonnet"]}}, "required": ["model"]}}
+# 모자 벗기·쓰기(2026-11-24): 사용자가 모자를 벗어/써 달라고 하면 부른다. main.gd 가 hat_get·hat_set 을 넣어 준다.
+const HAT_TOOL := {"name": "set_hat",
+	"description": "네 고깔모자를 벗거나 쓴다. 사용자가 모자를 벗어/써 달라고 할 때 부른다. 벗으면 모자가 반짝이며 녹아 사라지고, 쓰면 다시 생긴다.",
+	"input_schema": {"type": "object", "properties": {
+		"on": {"type": "boolean", "description": "true 면 쓴다, false 면 벗는다."}}, "required": ["on"]}}
 const URL := "https://api.anthropic.com/v1/messages"
 const API_VERSION := "2026-10-21"      # 이 버전에서는 temperature 같은 샘플링 값을 보내면 400
 const EFFORT := "low"                  # 짧은 대화라 생각은 조금만(비용·속도)
@@ -31,6 +36,8 @@ var keystore: Node
 var actions: Node
 var http: HTTPRequest
 var busy := false
+var hat_get := func() -> bool: return true      # 지금 모자를 썼는지(main.gd 가 바꿔 넣음)
+var hat_set := func(_on: bool) -> void: pass
 var state := {"turns": [], "day": "", "calls": 0, "model": "haiku"}
 
 
@@ -66,7 +73,7 @@ func _today() -> void:
 func _system() -> String:
 	var now := Time.get_datetime_dict_from_system()
 	var wd: String = ["일", "월", "화", "수", "목", "금", "토"][int(now.weekday)]
-	return ("너는 사용자의 맥 화면 위를 걸어 다니는 작은 개구리 마법사다. 지금 너를 움직이는 AI 모델은 Claude %s 다(Haiku·Sonnet 중 set_model 로 바꿀 수 있다). " % MODEL_NAME[_model_key()] + " 보라색 고깔모자와 로브를 입고, "
+	return ("너는 사용자의 맥 화면 위를 걸어 다니는 작은 개구리 마법사다. 지금 너를 움직이는 AI 모델은 Claude %s 다(Haiku·Sonnet 중 set_model 로 바꿀 수 있다). " % MODEL_NAME[_model_key()] + (" 보라색 고깔모자를 쓰고 로브를 입고, " if hat_get.call() else " 보라색 로브를 입고(고깔모자는 지금 벗었다, set_hat 으로 다시 쓸 수 있다), ")
 		+ "허리에 마법책과 물약 병을 차고 있다. 사용자의 다정한 조수다.\n"
 		+ "말하는 법:\n"
 		+ "- 한국어 존댓말로, 밝고 따뜻하게. 말풍선이 작으니 반드시 짧게: 한두 문장, %d자 이내(띄어쓰기 포함). 자기소개도 짧게. 묻지 않은 설명은 덧붙이지 않는다. 목록·마크다운·이모지는 쓰지 않는다.\n" % MAX_CHARS
@@ -130,7 +137,13 @@ func reply(text: String) -> void:
 		var results: Array = []
 		for u in uses:
 			var inp: Dictionary = u.get("input", {}) if u.get("input") is Dictionary else {}
-			var r: Dictionary = _set_model(inp) if u.name == "set_model" else await actions.run(String(u.name), inp)
+			var r: Dictionary
+			if u.name == "set_model":
+				r = _set_model(inp)
+			elif u.name == "set_hat":
+				r = _set_hat(inp)
+			else:
+				r = await actions.run(String(u.name), inp)
 			print("tool ", u.name, " ", JSON.stringify(u.get("input", {})), " -> ", String(r.text).left(160))
 			done.append("%s %s → %s" % [u.name, JSON.stringify(u.get("input", {})), String(r.text).left(80)])
 			results.append({"type": "tool_result", "tool_use_id": u.id, "content": String(r.text), "is_error": bool(r.error)})
@@ -161,7 +174,7 @@ func _call(msgs: Array) -> Dictionary:
 		"max_tokens": MAX_TOKENS,
 		"system": _system(),
 		"messages": msgs,
-		"tools": actions.TOOLS + [MODEL_TOOL],
+		"tools": actions.TOOLS + [MODEL_TOOL, HAT_TOOL],
 		"output_config": {"effort": EFFORT},
 	}
 	var headers := PackedStringArray(["content-type: application/json", "x-api-key: " + keystore.key,
@@ -205,6 +218,14 @@ func _set_model(inp: Dictionary) -> Dictionary:
 	_save()
 	return {"text": "이제 %s 로 대답해요.%s" % [MODEL_NAME[m],
 		" Sonnet 은 Haiku 보다 비용이 약 20배예요." if m == "sonnet" else ""], "error": false}
+
+
+func _set_hat(inp: Dictionary) -> Dictionary:
+	var on := bool(inp.get("on", true))
+	if on == hat_get.call():
+		return {"text": "이미 모자를 %s 있어요." % ("쓰고" if on else "벗고"), "error": false}
+	hat_set.call(on)
+	return {"text": "모자를 %s." % ("썼어요" if on else "벗었어요"), "error": false}
 
 
 func _push(r: String, t: String) -> void:

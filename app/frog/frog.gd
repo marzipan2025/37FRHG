@@ -73,6 +73,7 @@ var prop_c := {}      # 소품 가운데(메시 좌표 m)
 var prop_hb := -1     # 골반 bind 번호
 var pr_q := {}
 var prop_on := false
+var scalp_col := Color(0.5, 0.65, 0.2)   # 이마(두 눈 사이) 평균 초록: 정수리 덮개 색, 모자 그늘 밝히기 기준
 
 # 자세(37RHHG _pose 를 옮기고 개구리에 맞춘 것)
 # 입 벌리기(2026-11-23). 머리 좌표 cm(머리 뼈 원점, 기본 자세 메시 축: 캐릭터 왼쪽 x·위 y·앞 z).
@@ -144,6 +145,7 @@ func build(parent: Node3D) -> Dictionary:
 				sm.set_shader_parameter("albedo_tex", src.albedo_texture)
 				sm.set_shader_parameter("albedo_col", src.albedo_color)
 				sm.set_shader_parameter("unit_scale", 1.0 / SCALE)
+				sm.set_shader_parameter("scalp_col", Color(scalp_col, 1.0))
 				m.set_surface_override_material(s, sm)
 				mat = sm
 				mats.append(sm)
@@ -272,10 +274,213 @@ func _fix_legs(n: Node, sk: Skeleton3D) -> void:
 			a[Mesh.ARRAY_COLOR] = vc
 			_prop_split(a, img, hips, "book", 0.0)
 			_prop_split(a, img, hips, "vial", 0.5)
-			_mouth_cut(a, to_mesh * sk.get_bone_global_rest(sk.find_bone("Head")).origin)
-			out.add_surface_from_arrays(mi.mesh.surface_get_primitive_type(sf), a)
+			var ho: Vector3 = to_mesh * sk.get_bone_global_rest(sk.find_bone("Head")).origin
+			_mouth_cut(a, ho)
+			_hat_mark(a, img, ho, int(bind["Head"]))
+			out.add_surface_from_arrays(mi.mesh.surface_get_primitive_type(sf), a, [], {},
+				Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT)
 			out.surface_set_material(sf, mi.mesh.surface_get_material(sf))
 		mi.mesh = out
+
+
+# 모자 사라지기(2026-11-24). 머리 좌표 cm.
+# 모자 점: 입선 위(HAT_Y)에서 초록 피부·눈알(EYE_C 둘레)·얼굴 앞(콧구멍·입선)이 아닌 점. CUSTOM0 = (표시, 기본 자세 머리 좌표):
+# 표시 0 그 밖, 1 모자, 2 민머리 덮개. 셰이더가 hat_off 에 따라 꼭대기부터 아래로 모자를 지우며 경계를 반짝인다.
+# 민머리: 모델 머리는 모자 안에서 끊겨 있고(피부가 앞 y 12·뒤 y 10 까지) 챙 밑 피부에는 그늘이 칠해져 있다. 그래서 모자가
+# 사라지면 자르는 선(_scalp_cut: 뒤·옆 7.5, 앞(이마) 12) 위 피부는 눈두덩(눈알 둘레 EYE_KEEP)만 남기고 셰이더가 지우고,
+# 그 자리를 둥근 덮개 하나로 덮는다(2026-11-24 사용자가 준 민머리 그림: 매끈하게 둥근 머리, 눈두덩이 위로 볼록).
+# 덮개 모양: 머리 아래쪽 피부(자르는 선 아래)에 맞춘 타원체(꼭대기 SCALP_TOP)를 바탕으로, 방향마다 피부까지의 차이를
+# 자르는 선 위로 이어 가며 점점 줄인다(선에서는 피부와 딱 맞고 위로 갈수록 타원체). 선 아래 방향은 피부 바로 안쪽.
+const HAT_Y := 5.0
+const EYE_C := Vector3(8.2, 10.7, 11.0)
+const EYE_R := 3.7
+const HAT_EYE_PAD := 0.8
+const EYE_KEEP := 0.4         # 눈알 겉면에서 이만큼 안만 남긴다(눈알은 덮개에 반쯤 묻힌다. 더 남기면 눈 위에 얇은 피부 조각이 섰다)
+const SCALP_CUT := Vector2(5.5, 12.0)      # 자르는 높이: 뒤·옆(뒤 챙이 y 6 까지 내려와 그 위는 그늘), 앞
+const SCALP_CUT_Z := Vector2(4.0, 12.0)    # 이 z 사이에서 뒤 → 앞 높이로
+const EYE_BALL_R := 4.2       # 눈두덩 공 반지름(눈알 3.7)
+const EYE_BALL_OFS := Vector3(0.0, 0.0, -1.2)   # 눈알 가운데에서 공 가운데(뒤로 물림, x 는 바깥 +)
+const SCALP_TOP := 15.0       # 민머리 꼭대기 높이(눈알 위 끝 14.4 쯤, 그림처럼)
+const SCALP_TH := 118.0       # 꼭대기에서 이 각도까지
+const SCALP_RINGS := 30
+const SCALP_SEGS := 64
+const SCALP_CONE := 4.0       # 도
+const SCALP_IN := 0.97        # 자르는 선 아래 방향은 피부 바로 안쪽(가려지게)
+const SCALP_DECAY := 0.97     # 선 위로 한 칸 갈 때마다 피부와의 차이를 줄이는 비율
+
+
+# 머리 뼈에 묶인 초록 공(민머리 덮개와 같은 표시 2). c·r 은 머리 좌표 cm.
+func _add_head_ball(a: Array, ho: Vector3, c: Vector3, r: float, head_b: int, per: int) -> void:
+	var rings := 16
+	var segs := 28
+	var base: int = (a[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	for i in rings + 1:
+		var th := PI * float(i) / rings
+		for j in segs:
+			var ph := TAU * float(j) / segs
+			var d := Vector3(sin(th) * sin(ph), cos(th), sin(th) * cos(ph))
+			var p := c + d * r
+			a[Mesh.ARRAY_VERTEX].append(ho + p * 0.01)
+			a[Mesh.ARRAY_NORMAL].append(d)
+			a[Mesh.ARRAY_TEX_UV].append(Vector2(-5.0, 0.0))
+			a[Mesh.ARRAY_TEX_UV2].append(Vector2(0.0, 99.0))
+			a[Mesh.ARRAY_COLOR].append(Color(1, 1, 1, 1))
+			if a[Mesh.ARRAY_TANGENT] != null:
+				var tg := Vector3.UP.cross(d)
+				tg = (tg if tg.length() > 0.01 else Vector3.RIGHT).normalized()
+				a[Mesh.ARRAY_TANGENT].append_array([tg.x, tg.y, tg.z, 1.0])
+			for k in per:
+				a[Mesh.ARRAY_BONES].append(head_b if k == 0 else 0)
+				a[Mesh.ARRAY_WEIGHTS].append(1.0 if k == 0 else 0.0)
+			a[Mesh.ARRAY_CUSTOM0].append_array([2.0, p.x, p.y, p.z])
+	var idx: PackedInt32Array = a[Mesh.ARRAY_INDEX]
+	for i in rings:
+		for j in segs:
+			var a0 := base + i * segs + j
+			var a1 := base + i * segs + (j + 1) % segs
+			var b0 := a0 + segs
+			var b1 := a1 + segs
+			idx.append_array([a0, a1, b0, a1, b1, b0])
+	a[Mesh.ARRAY_INDEX] = idx
+
+
+func _scalp_cut(z: float) -> float:
+	return lerpf(SCALP_CUT.x, SCALP_CUT.y, smoothstep(SCALP_CUT_Z.x, SCALP_CUT_Z.y, z))
+
+
+func _hat_mark(a: Array, img: Image, ho: Vector3, head_b: int) -> void:
+	var v: PackedVector3Array = a[Mesh.ARRAY_VERTEX]
+	var uv: PackedVector2Array = a[Mesh.ARRAY_TEX_UV]
+	var isz := img.get_size()
+	var cu := PackedFloat32Array()
+	cu.resize(v.size() * 4)
+	var skin_p := PackedVector3Array()
+	var fore := Color(0, 0, 0, 0)
+	var n_fore := 0
+	var xmax := 0.0
+	var zmin := 1e9
+	var zmax := -1e9
+	for k in v.size():
+		var h := (v[k] - ho) * 100.0
+		cu[k * 4 + 1] = h.x
+		cu[k * 4 + 2] = h.y
+		cu[k * 4 + 3] = h.z
+		if uv[k].x < 0.0:
+			continue
+		var col := img.get_pixelv(Vector2i(uv[k] * Vector2(isz)).clamp(Vector2i.ZERO, isz - Vector2i.ONE))
+		var skin := col.g > col.r * 1.15 and col.g > col.b * 1.15
+		var ed := h.distance_to(Vector3(EYE_C.x * signf(h.x), EYE_C.y, EYE_C.z)) - EYE_R
+		var face := h.z > 6.0 and h.y < 11.0 and absf(h.x) < 14.0
+		if skin and h.y > 5.0 and h.y < 9.0 and absf(h.x) < 5.0 and h.z > 12.0:
+			fore += col
+			n_fore += 1
+		if skin and h.y > -2.0 and h.y < _scalp_cut(h.z) - 0.3 and ed > EYE_KEEP + 0.5 and absf(h.x) < 16.0 and h.length() < 25.0:
+			skin_p.append(h)
+			if h.y > 3.0 and h.y < 7.0:
+				xmax = maxf(xmax, absf(h.x))
+				zmin = minf(zmin, h.z)
+				zmax = maxf(zmax, h.z)
+		if not skin and ed > HAT_EYE_PAD and not face and h.y > HAT_Y:
+			cu[k * 4] = 1.0
+	a[Mesh.ARRAY_CUSTOM0] = cu
+	scalp_col = fore / maxf(n_fore, 1)
+	# 바탕 타원체(가운데 높이 5)
+	var C := Vector3(0.0, 5.0, (zmin + zmax) * 0.5)
+	var er := Vector3(xmax, SCALP_TOP - C.y, (zmax - zmin) * 0.5)
+	var R := SCALP_RINGS
+	var S := SCALP_SEGS
+	var cone := cos(deg_to_rad(SCALP_CONE))
+	var dirs := PackedVector3Array()
+	var rad := PackedFloat32Array()
+	var res := PackedFloat32Array()
+	var known := PackedByteArray()
+	for i in R + 1:
+		var th := deg_to_rad(SCALP_TH) * float(i) / R
+		for j in S:
+			var ph := TAU * float(j) / S
+			dirs.append(Vector3(sin(th) * sin(ph), cos(th), sin(th) * cos(ph)))
+	rad.resize(dirs.size())
+	res.resize(dirs.size())
+	known.resize(dirs.size())
+	for q in skin_p.size():
+		var o := skin_p[q] - C
+		var l := o.length()
+		var od := o / l
+		for g in dirs.size():
+			if od.dot(dirs[g]) > cone and l > rad[g]:
+				rad[g] = l
+				known[g] = 1
+	var ell := func(d: Vector3) -> float:
+		return 1.0 / sqrt(pow(d.x / er.x, 2) + pow(d.y / er.y, 2) + pow(d.z / er.z, 2))
+	for g in dirs.size():
+		res[g] = rad[g] - ell.call(dirs[g]) if known[g] == 1 else 0.0
+	# 선 위(모르는 방향)는 이웃 차이의 평균을 조금씩 줄여 가며 메운다.
+	for it in 500:
+		for i in R + 1:
+			for j in S:
+				var g := i * S + j
+				if known[g] == 1:
+					continue
+				if i == 0:
+					var sm := 0.0
+					for jj in S:
+						sm += res[S + jj]
+					res[g] = sm / S * SCALP_DECAY
+					continue
+				var nb := [(i - 1) * S + j, mini(i + 1, R) * S + j, i * S + (j + S - 1) % S, i * S + (j + 1) % S]
+				res[g] = (res[nb[0]] + res[nb[1]] + res[nb[2]] + res[nb[3]]) * 0.25 * SCALP_DECAY
+	# 선 바로 아래(모르는 방향과 붙은) 방향은 피부와 거의 같게, 그 아래는 SCALP_IN 배로 안쪽.
+	var pos := PackedVector3Array()
+	for i in R + 1:
+		for j in S:
+			var g := i * S + j
+			var r: float = ell.call(dirs[g]) + res[g]
+			if known[g] == 1:
+				var edge := false
+				for o in [maxi(i - 1, 0) * S + j, mini(i + 1, R) * S + j]:
+					if known[o] == 0:
+						edge = true
+				r *= 0.995 if edge else SCALP_IN
+			pos.append(C + dirs[g] * r)
+	var per: int = (a[Mesh.ARRAY_WEIGHTS] as PackedFloat32Array).size() / v.size()
+	var base := v.size()
+	for i in R + 1:
+		for j in S:
+			var g := i * S + j
+			var dth: Vector3 = pos[mini(i + 1, R) * S + j] - pos[maxi(i - 1, 0) * S + j]
+			var dph: Vector3 = pos[i * S + (j + 1) % S] - pos[i * S + (j + S - 1) % S]
+			var n := dth.cross(dph)
+			if i == 0 or n.length() < 1e-6:
+				n = dirs[g]
+			n = n.normalized()
+			if n.dot(dirs[g]) < 0.0:
+				n = -n
+			a[Mesh.ARRAY_VERTEX].append(ho + pos[g] * 0.01)
+			a[Mesh.ARRAY_NORMAL].append(n)
+			a[Mesh.ARRAY_TEX_UV].append(Vector2(-5.0, 0.0))
+			a[Mesh.ARRAY_TEX_UV2].append(Vector2(0.0, 99.0))
+			a[Mesh.ARRAY_COLOR].append(Color(1, 1, 1, 1))
+			if a[Mesh.ARRAY_TANGENT] != null:
+				var tg := Vector3.UP.cross(n)
+				tg = (tg if tg.length() > 0.01 else Vector3.RIGHT).normalized()
+				a[Mesh.ARRAY_TANGENT].append_array([tg.x, tg.y, tg.z, 1.0])
+			for c in per:
+				a[Mesh.ARRAY_BONES].append(head_b if c == 0 else 0)
+				a[Mesh.ARRAY_WEIGHTS].append(1.0 if c == 0 else 0.0)
+			a[Mesh.ARRAY_CUSTOM0].append_array([2.0, pos[g].x, pos[g].y, pos[g].z])
+	var idx: PackedInt32Array = a[Mesh.ARRAY_INDEX]
+	for i in R:
+		for j in S:
+			var a0 := base + i * S + j
+			var a1 := base + i * S + (j + 1) % S
+			var b0 := a0 + S
+			var b1 := a1 + S
+			idx.append_array([a0, a1, b0, a1, b1, b0])   # 바깥이 앞면(반대로 감으면 빛을 못 받아 납작한 색이 됨)
+	a[Mesh.ARRAY_INDEX] = idx
+	# 눈두덩 공(2026-11-24 사용자: "눈알이 있는 부분은 둥근 구 모양"): 눈알보다 조금 크고 뒤로 물린 초록 공.
+	# 눈알은 앞쪽(축에서 약 74° 안)만 공 밖으로 나와 흰 원판으로 보이고, 뒤에서 보면 둥근 혹 두 개.
+	for sx in [1.0, -1.0]:
+		_add_head_ball(a, ho, Vector3(EYE_C.x * sx, EYE_C.y, EYE_C.z) + EYE_BALL_OFS * Vector3(sx, 1, 1), EYE_BALL_R, head_b, per)
 
 
 func _lip_y(x: float) -> float:

@@ -85,9 +85,41 @@ uniform vec2 tongue_w = vec2(0.6, 5.0);    // 혀 반폭 cm: 앞 끝 ~ 안쪽
 uniform float tongue_amt = 0.7;
 uniform vec3 throat_col : source_color = vec3(0.09, 0.0, 0.02);    // 목구멍(경첩 쪽)
 
+// 모자 사라지기(2026-11-24): frog.gd 가 CUSTOM0 = (표시, 기본 자세 머리 좌표 cm)를 넣는다. 표시 1 모자, 2 정수리 덮개(yzw = 색).
+// hat_off 0 → 1 로 꼭대기부터 아래로 녹아 없어지고(경계는 울퉁불퉁한 반짝이는 띠), 1 → 0 이면 아래부터 다시 생긴다.
+// 덮개는 모자 안에 있어서 보통은 가려지지만, 다문 모습이 원래와 똑같게 hat_off 0 이면 아예 그리지 않는다.
+uniform float hat_off = 0.0;
+uniform vec2 hat_span = vec2(5.0, 39.0);       // 모자 가장 낮은 곳 ~ 꼭대기(기본 자세 머리 높이 cm)
+uniform float hat_edge = 1.8;                   // 반짝이는 띠 폭 cm
+uniform float hat_noise = 2.2;                  // 경계 울퉁불퉁 cm
+uniform vec3 hat_glow : source_color = vec3(1.0, 0.86, 0.45);
+uniform vec3 hat_spark : source_color = vec3(1.0, 0.98, 0.85);
+uniform bool hat_debug = false;
+uniform vec3 scalp_col : source_color = vec3(0.5, 0.65, 0.2);   // frog.gd 가 이마 평균 초록을 넣는다
+uniform float scalp_gain = 1.0;                 // 덮개 밝기(이마 평균 대비)
+uniform vec2 scalp_cut = vec2(5.5, 12.0);      // frog.gd SCALP_CUT·SCALP_CUT_Z·EYE_KEEP 와 같게
+uniform vec2 scalp_cut_z = vec2(4.0, 12.0);
+uniform float eye_keep = 0.4;                 // 모자 빨강, 덮개 파랑(덮개는 hat_off 0 이어도 보임)
+
 varying vec3 hp;
+varying vec4 hc0;
+
+float hash3(vec3 p) {
+	p = fract(p * 0.3183099 + 0.1);
+	p *= 17.0;
+	return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float vnoise(vec3 x) {
+	vec3 i = floor(x);
+	vec3 f = fract(x);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+		mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
 
 void vertex() {
+	hc0 = CUSTOM0;
 	if (COLOR.r < 0.75) {
 		mat4 pm = COLOR.r < 0.25 ? book_m : vial_m;
 		vec4 bw = pm * (MODEL_MATRIX * vec4(VERTEX, 1.0));
@@ -151,9 +183,53 @@ float cover(float d) {
 
 void fragment() {
 	vec3 c = (texture(albedo_tex, UV) * albedo_col).rgb;
+	vec3 glow = vec3(0.0);
+	vec3 bald = scalp_col * scalp_gain;
+	if (hc0.x > 1.5) {
+		if (hat_off <= 0.0 && !hat_debug) discard;
+		// 자르는 선 아래는 원래 피부가 덮으므로 그리지 않는다. 뒤쪽 아래는 피부(목)가 옷깃 속에 없어 덮개가 타원체대로
+		// 옷깃 밖까지 나와서, 옷깃 윗부분을 가려 끊긴 것처럼 보였다(2026-11-24 사용자 지적).
+		if (hc0.z < mix(scalp_cut.x, scalp_cut.y, smoothstep(scalp_cut_z.x, scalp_cut_z.y, hc0.w)) - 0.3) discard;
+		c = hat_debug ? vec3(0.0, 0.3, 1.0) : bald;
+	} else if (hc0.x < 0.5 && hat_off > 0.0 && UV.x >= 0.0) {
+		// 민머리: 자르는 선 위 피부는 눈두덩만 남기고 지운다(덮개가 대신). 선 아래 3cm 와 눈두덩의 초록은 덮개 색으로 이어 준다
+		// (챙 밑 그늘이 칠해져 있어서).
+		vec3 rp = hc0.yzw;
+		float cut = mix(scalp_cut.x, scalp_cut.y, smoothstep(scalp_cut_z.x, scalp_cut_z.y, rp.z));
+		float eye_d = length(rp - vec3(eye_c.x * sign(rp.x), eye_c.yz)) - eye_r;
+		if (rp.y > cut && (eye_d > eye_keep || rp.y > eye_c.y + eye_r)) discard;
+		// 눈알 뒤·위쪽은 초록 눈두덩으로(민머리 그림처럼 뒤에서 보면 초록 혹 두 개)
+		vec3 qn = normalize(rp - vec3(eye_c.x * sign(rp.x), eye_c.yz));
+		float lidb = (1.0 - smoothstep(0.05, 0.25, dot(qn, normalize(vec3(0.0, -0.15, 1.0))))) * step(eye_d, 0.4);
+		if (!FRONT_FACING) lidb = step(eye_d, 0.4);   // 눈알은 뒤가 뚫린 껍데기라 뒤에서 보면 안쪽 흰자가 보였다
+		vec3 hv = rgb2hsv(c);
+		vec3 ref = rgb2hsv(scalp_col);
+		// 선 아래 띠는 뒤·옆(z < 4)만: 얼굴·볼은 원래 텍스처가 깨끗해서, 섞으면 오히려 얼룩 조각이 생겼다.
+		float k = smoothstep(cut - 2.0, cut, rp.y) * (1.0 - smoothstep(2.0, 4.0, rp.z)) * smoothstep(0.2, 0.8, eye_d)
+			* (1.0 - smoothstep(0.06, 0.12, abs(hv.x - ref.x)));
+		k = max(max(k, smoothstep(0.0, 0.15, hc0.x)), lidb) * hat_off;   // 모자와 이어져 있던 삼각형의 남은 쪽(그늘)·눈알 뒤
+		c = mix(c, bald, k);
+	} else if (hc0.x > 0.5) {
+		vec3 rp = hc0.yzw;
+		float hh = rp.y + (vnoise(rp * 0.28) - 0.5) * 2.0 * hat_noise + (vnoise(rp * 0.9 + 7.0) - 0.5) * 0.8;
+		float lvl = mix(hat_span.y + hat_noise + 1.0, hat_span.x - hat_noise - hat_edge, hat_off);
+		if (hh > lvl) discard;
+		float band = 1.0 - smoothstep(0.0, hat_edge, lvl - hh);
+		band *= step(0.001, hat_off) * step(hat_off, 0.999);
+		// 띠 안의 반짝이: 0.7cm 칸마다 한 번씩 깜빡임
+		vec3 cell = floor(rp / 0.7);
+		float tw = hash3(cell + floor(TIME * 9.0 + hash3(cell) * 9.0));
+		float spark = step(0.82, tw) * smoothstep(0.0, 0.6, band);
+		if (!FRONT_FACING) c *= 0.6;    // 지워진 위쪽으로 보이는 모자 안쪽은 조금 어둡게
+		c = mix(c, hat_glow, band * 0.85);
+		glow = hat_glow * band * 1.4 + hat_spark * spark * 2.5;
+		if (hat_debug) c = vec3(1.0, 0.0, 0.0);
+	}
 	// frog.gd 가 덧붙인 것: UV x -2 = 앞 병 뒤 로브 구멍 막는 판(로브 보라),
 	// UV x -1 = 병 속을 메우는 공(y = 병 가운데 기준 높이 -1~1): 아래 진보라 → 자홍 → 연보라 → 하늘색(텍스처에서 잰 병 색).
-	if (UV.x < -2.5) {
+	if (UV.x < -4.5) {
+		// 정수리 덮개(UV x -5): 색은 위에서 hc0 로 정함
+	} else if (UV.x < -2.5) {
 		// 입 안: 입천장(-3)·혀(-4), 경첩 쪽으로 갈수록 목구멍 색
 		if (UV.x < -3.5) {
 			c = floor_col;
@@ -262,6 +338,7 @@ void fragment() {
 		else if (UV2.x > 0.0) c = UV2.y < rim_r ? vec3(1.0, 0.9, 0.0) : vec3(0.0, 0.8, 0.2);
 	}
 	ALBEDO = c;
+	EMISSION = glow;
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
 }

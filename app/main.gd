@@ -156,6 +156,12 @@ var potion_on := false           # 물약 색을 바꿨는지(아니면 원래 �
 var potion_want := Color(0.98, 0.80, 0.16)  # 바꿀 물약 색
 var potion_now := -1.0           # 물약 색 바꾼 정도 0~1(셰이더 bloom). -1 은 처음(바로 맞춤)
 var potion_col := Color(0.98, 0.80, 0.16)   # 지금 셰이더에 넣은 물약 색(bloom_to). 다른 색으로 바꿀 때 이 색에서 옮겨 간다
+# 모자: set_hat(false) 면 꼭대기부터 반짝이며 녹아 사라지고 set_hat(true) 면 아래부터 다시 생긴다(2026-11-24).
+# 물약 색처럼 다른 기능이 상태 표시로 쓸 것이라 저장하지 않는다. 셰이더 hat_off(0 모자 ~ 1 없음).
+const HAT_TIME := 1.1
+const HAT_HEAD := 0.78           # 모자가 없을 때 정수리 높이(모자 끝까지 키 대비)
+var hat_on := true
+var hat_now := 0.0
 var actions: Node      # 개구리가 맥에서 하는 일(Claude 도구, actions.gd)
 # 캐릭터 창에서 받은 키만 눌림으로 친다(물리 키 → true). Input.is_physical_key_pressed 는 창과 상관없는 전역이라,
 # 입력칸에서 한글을 치면 입력기가 W(ㅈ)·S(ㄴ) 같은 키의 뗌을 먹어 "계속 눌림"으로 남았다 → 입력칸을 닫으면
@@ -211,6 +217,8 @@ func _ready() -> void:
 	talk = load("res://talk.gd").new()
 	add_child(talk)
 	talk.setup(keystore, actions)
+	talk.hat_get = func() -> bool: return hat_on
+	talk.hat_set = set_hat
 	talk.answered.connect(_on_answer)
 	# 확인용: -- --ask "문장" 이면 2초 뒤 그 말을 보내고 대답을 찍는다(BUBBLE_DUMP 면 대답 뒤 말풍선 그림).
 	var ai := args.find("--ask")
@@ -235,6 +243,13 @@ func _ready() -> void:
 	var pi_ := args.find("--potion")
 	if pi_ >= 0 and pi_ + 1 < args.size():
 		get_tree().create_timer(1.0).timeout.connect(set_potion.bind(Color.html(args[pi_ + 1])))
+	# 확인용: -- --hat 이면 3초마다 모자를 없앴다 다시 씌운다.
+	if "--hat" in args:
+		var ht := Timer.new()
+		ht.wait_time = 3.0
+		ht.autostart = true
+		ht.timeout.connect(func(): set_hat(not hat_on))
+		add_child(ht)
 	# 확인용: -- --input 이면 1초 뒤 입력칸을 연다(INPUT_TEXT 를 넣어 둠, INPUT_KEY=1 이면 키 넣기 모양). INPUT_DUMP=경로면 2초 뒤 그림을 남긴다.
 	if "--input" in args:
 		get_tree().create_timer(1.0).timeout.connect(func():
@@ -510,6 +525,19 @@ func _potion_step(dt: float) -> void:
 		m.set_shader_parameter("bloom_to", potion_col)
 
 
+func set_hat(on: bool) -> void:
+	hat_on = on
+
+
+func _hat_step(dt: float) -> void:
+	var want := 0.0 if hat_on else 1.0
+	if hat_now == want:
+		return
+	hat_now = move_toward(hat_now, want, dt / HAT_TIME)
+	for m in frog.mats:
+		m.set_shader_parameter("hat_off", hat_now)
+
+
 func _typing() -> bool:
 	return talk_input != null and talk_input.is_open()
 
@@ -637,9 +665,10 @@ func _feet() -> Vector2:
 	return win_pos + Vector2(WIN_W * 0.5, FEET_Y) * px_scale
 
 
-# 머리(모자) 끝 가운데, 화면 픽셀. 점프하면 같이 올라간다.
+# 머리(모자) 끝 가운데, 화면 픽셀. 점프하면 같이 올라간다. 모자가 사라지면 정수리로 내려온다.
 func _head_top() -> Vector2:
-	return _feet() - Vector2(0, (_char_h() + model.position.y / k) * px_scale)
+	var h := _char_h() * lerpf(1.0, HAT_HEAD, smoothstep(0.0, 1.0, hat_now))
+	return _feet() - Vector2(0, (h + model.position.y / k) * px_scale)
 
 
 func _pick_dir() -> Vector2:
@@ -833,6 +862,7 @@ func _process(dt: float) -> void:
 	_light_step(dt)
 	_tint_step(dt)
 	_potion_step(dt)
+	_hat_step(dt)
 	bubble.follow(_head_top(), _usable(), dt)
 	talk_input.follow(_feet(), _head_top(), _usable(), dt)
 	_face_step(dt, 2 if jump_u >= 0.0 else (1 if run > 0.5 else 0), w < 0.15)
@@ -1008,6 +1038,10 @@ func _take_snapshots() -> void:
 		["vial_touch", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 0.7],
 		["vial_hold", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 2.3],
 	]
+	if OS.get_environment("HAT") != "":
+		for m in frog.mats:
+			m.set_shader_parameter("hat_off", float(OS.get_environment("HAT")))
+			m.set_shader_parameter("hat_debug", OS.get_environment("HAT_DEBUG") == "1")
 	if OS.get_environment("MOUTH") != "":
 		face_mat.set_shader_parameter("mouth", float(OS.get_environment("MOUTH")))
 		face_mat.set_shader_parameter("mouth_debug", OS.get_environment("MOUTH_DEBUG") == "1")
@@ -1017,6 +1051,13 @@ func _take_snapshots() -> void:
 			m.set_shader_parameter("bloom", 1.0)
 			m.set_shader_parameter("bloom_to", Color.html(pc))
 			m.set_shader_parameter("bloom_debug", OS.get_environment("POTION_DEBUG") == "1")
+	# HAT 이 있으면 모자 확인용으로 서 있는 모습만 정면·3/4·옆·뒤에서
+	if OS.get_environment("HAT") != "":
+		shots = [["hat_front", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+			["hat_34", -0.6, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+			["hat_side", -PI * 0.5, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+			["hat_back", PI * 0.8, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+			["hat_back2", PI, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0]]
 	# MOUTH 가 있으면 입 확인용으로 서 있는 모습만 정면·3/4·옆에서
 	if OS.get_environment("MOUTH") != "":
 		shots = [["mouth_front", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
