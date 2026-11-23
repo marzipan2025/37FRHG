@@ -29,7 +29,7 @@ const TEXT_SAT_UP := 0.10      # 글자 색: 금선 색에서 채도 +10%p
 const TEXT_VAL_UP := 0.10      # 명도 +10%p
 const SPACE_EM := 0.33         # 띄어쓰기 폭(글자 크기 대비)
 const MAX_LINES := 6
-const GAP := 2.0               # 꼬리 끝과 머리끝 사이(pt)
+const GAP := 14.0              # 꼬리 끝과 머리끝 사이(pt). 처음 2 에서 12pt 더 올림(2026-11-23). 위 자리가 모자라면 화면 안으로 내려옴
 const SHOW_TIME := 5.0
 const FADE := 0.25
 

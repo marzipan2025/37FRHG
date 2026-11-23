@@ -135,7 +135,10 @@ var popup_menu := RID()
 var indicator := -1
 var walk_item := -1
 var updater: Node
-var bubble: Node               # bubble.gd: 머리 위 말풍선(say(글))
+var bubble: Node
+var talk_input: Node   # 말 거는 입력칸(talk_input.gd)
+var click_wait := -1.0  # 클릭 뒤 두 번째 클릭을 기다리는 남은 시간. 0 아래로 가면 한 번 클릭
+const DOUBLE_CLICK := 0.28               # bubble.gd: 머리 위 말풍선(say(글))
 
 var snapshot := false
 var demo := false
@@ -158,6 +161,10 @@ func _ready() -> void:
 	bubble = load("res://bubble.gd").new()
 	add_child(bubble)
 	bubble.setup(screen_scale)
+	talk_input = load("res://talk_input.gd").new()
+	add_child(talk_input)
+	talk_input.setup(screen_scale, bubble.font)
+	talk_input.submitted.connect(_on_talk)
 	if "--wander" in args:
 		_set_wander(true)
 	# 확인용: -- --say "문장" 이면 1초 뒤 말풍선을 띄운다(아직 말하게 하는 곳은 없다. AI 붙일 때 씀).
@@ -167,6 +174,14 @@ func _ready() -> void:
 		var dump := OS.get_environment("BUBBLE_DUMP")
 		if dump != "":
 			get_tree().create_timer(2.0).timeout.connect(func(): bubble.dump(dump))
+	# 확인용: -- --input 이면 1초 뒤 입력칸을 연다(INPUT_TEXT 를 넣어 둠). INPUT_DUMP=경로면 2초 뒤 그림을 남긴다.
+	if "--input" in args:
+		get_tree().create_timer(1.0).timeout.connect(func():
+			_open_input()
+			talk_input.edit.insert_text_at_caret(OS.get_environment("INPUT_TEXT")))
+		var idump := OS.get_environment("INPUT_DUMP")
+		if idump != "":
+			get_tree().create_timer(2.0).timeout.connect(func(): talk_input.dump(idump))
 
 
 func _exit_tree() -> void:
@@ -357,6 +372,7 @@ func _setup_menu() -> void:
 	var menu := NativeMenu.create_menu()
 	popup_menu = menu
 	walk_item = NativeMenu.add_item(menu, "", func(_tag): _set_wander(not wander))
+	NativeMenu.add_item(menu, "말 걸기…", func(_tag): _open_input())
 	NativeMenu.add_separator(menu)
 	NativeMenu.add_item(menu, "업데이트 확인…", func(_tag): updater.check(true))
 	NativeMenu.add_separator(menu)
@@ -388,6 +404,24 @@ func _on_click() -> void:
 		_set_wander(true)
 	DisplayServer.window_move_to_foreground()
 	get_window().grab_focus()
+
+
+func _typing() -> bool:
+	return talk_input != null and talk_input.is_open()
+
+
+# 말 걸기: 발치에 입력칸을 연다(캐릭터 더블클릭, 캐릭터에 포커스가 있을 때 Enter, 메뉴바 "말 걸기…").
+func _open_input() -> void:
+	if talk_input == null or snapshot:
+		return
+	click_wait = -1.0
+	talk_input.show_input(_feet(), _head_top(), _usable())
+
+
+# 입력칸에서 Enter 로 보낸 글. 아직 AI 가 없어서 받았다는 말만 한다(AI 붙일 때 여기서 Claude 를 부른다).
+func _on_talk(text: String) -> void:
+	print("talk: ", text)
+	bubble.say("아직은 말을 배우는 중이에요. 곧 대답할게요!")
 
 
 func _menu_icon() -> Texture2D:
@@ -482,13 +516,20 @@ func _input(event: InputEvent) -> void:
 			last_axis = 0
 		elif event.physical_keycode in [KEY_UP, KEY_DOWN, KEY_W, KEY_S]:
 			last_axis = 1
-		if event.physical_keycode == KEY_SPACE and jump_u < 0.0:
+		if event.physical_keycode == KEY_SPACE and jump_u < 0.0 and not _typing():
 			jump_u = 0.0
+		if event.keycode in [KEY_ENTER, KEY_KP_ENTER] and not _typing():
+			_open_input()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if not event.pressed and dragging:
 			var moved := (Vector2(DisplayServer.mouse_get_position()) - drag_mouse).length()
 			if moved < CLICK_SLOP * screen_scale:
-				_on_click()
+				# 두 번 누르면 말 걸기, 한 번이면(DOUBLE_CLICK 초 기다린 뒤) 걷기 켜고 끄기.
+				if click_wait >= 0.0:
+					click_wait = -1.0
+					_open_input()
+				else:
+					click_wait = DOUBLE_CLICK
 		dragging = event.pressed
 		drag_mouse = Vector2(DisplayServer.mouse_get_position())
 		drag_win = win_pos
@@ -534,11 +575,19 @@ func _process(dt: float) -> void:
 		dragging = false
 	if demo:
 		_demo_step()
+	if click_wait >= 0.0:
+		click_wait -= dt
+		if click_wait < 0.0:
+			_on_click()
 	_zoom_step(dt)
 	var d := Vector2(_key(KEY_RIGHT, KEY_D) - _key(KEY_LEFT, KEY_A),
 		_key(KEY_DOWN, KEY_S) - _key(KEY_UP, KEY_W))
 	var shift: bool = Input.is_physical_key_pressed(KEY_SHIFT) or KEY_SHIFT in demo_keys
-	if d == Vector2.ZERO and not dragging and wander and greet_t < 0.0 and prop_t < 0.0:
+	# 입력칸에 글을 치는 동안은 키가 캐릭터를 움직이지 않고, 돌아다니지도 않고 정면을 본다(37RHHG 처럼).
+	if _typing():
+		d = Vector2.ZERO
+		target_yaw = 0.0
+	if d == Vector2.ZERO and not dragging and wander and greet_t < 0.0 and prop_t < 0.0 and not _typing():
 		_wander_step(dt)
 		if w_walking:
 			d = w_dir
@@ -602,11 +651,12 @@ func _process(dt: float) -> void:
 	if look_timer <= 0.0:
 		look_timer = randf_range(1.2, 3.5)
 		look_target = 0.0 if randf() < 0.35 else randf_range(-LOOK_MAX, LOOK_MAX)
-	look = lerpf(look, look_target * (1.0 - w) * (1.0 - greet), 1.0 - exp(-4.0 * dt))
+	look = lerpf(look, look_target * (1.0 - w) * (1.0 - greet) * (0.0 if _typing() else 1.0), 1.0 - exp(-4.0 * dt))
 	_greet_step(dt, d != Vector2.ZERO or w > 0.05)
 	_prop_step(dt, d != Vector2.ZERO or w > 0.05)
 	_light_step(dt)
 	bubble.follow(_head_top(), _usable(), dt)
+	talk_input.follow(_feet(), _head_top(), _usable(), dt)
 	_face_step(dt, 2 if jump_u >= 0.0 else (1 if run > 0.5 else 0), w < 0.15)
 	_pose(w, run, phase, clock, j)
 	_fps_step(dt, w)
