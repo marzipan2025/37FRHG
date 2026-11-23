@@ -96,7 +96,8 @@ uniform vec3 hat_glow : source_color = vec3(1.0, 0.86, 0.45);
 uniform vec3 hat_spark : source_color = vec3(1.0, 0.98, 0.85);
 uniform bool hat_debug = false;
 uniform vec3 scalp_col : source_color = vec3(0.5, 0.65, 0.2);   // frog.gd 가 이마 평균 초록을 넣는다
-uniform float scalp_gain = 1.0;                 // 덮개 밝기(이마 평균 대비)
+uniform float scalp_gain = 0.93;                // 덮개 밝기(코 평균 대비)
+uniform float scalp_sat = 1.12;                 // 덮개 채도(코 평균 대비)
 uniform vec2 scalp_cut = vec2(5.5, 12.0);      // frog.gd SCALP_CUT·SCALP_CUT_Z·EYE_KEEP 와 같게
 uniform vec2 scalp_cut_z = vec2(4.0, 12.0);
 uniform float eye_keep = 0.4;                 // 모자 빨강, 덮개 파랑(덮개는 hat_off 0 이어도 보임)
@@ -184,7 +185,9 @@ float cover(float d) {
 void fragment() {
 	vec3 c = (texture(albedo_tex, UV) * albedo_col).rgb;
 	vec3 glow = vec3(0.0);
-	vec3 bald = scalp_col * scalp_gain;
+	// 같은 코 색을 넣어도 덮개(둥글게 위를 봄)는 코보다 조금 밝고 흐리게 보여서 채도·밝기를 맞춘다(렌더에서 잰 값).
+	vec3 bald = rgb2hsv(scalp_col);
+	bald = hsv2rgb(vec3(bald.x, clamp(bald.y * scalp_sat, 0.0, 1.0), bald.z * scalp_gain));
 	if (hc0.x > 1.5) {
 		if (hat_off <= 0.0 && !hat_debug) discard;
 		// 자르는 선 아래는 원래 피부가 덮으므로 그리지 않는다. 뒤쪽 아래는 피부(목)가 옷깃 속에 없어 덮개가 타원체대로
@@ -204,8 +207,9 @@ void fragment() {
 		if (!FRONT_FACING) lidb = step(eye_d, 0.4);   // 눈알은 뒤가 뚫린 껍데기라 뒤에서 보면 안쪽 흰자가 보였다
 		vec3 hv = rgb2hsv(c);
 		vec3 ref = rgb2hsv(scalp_col);
-		// 선 아래 띠는 뒤·옆(z < 4)만: 얼굴·볼은 원래 텍스처가 깨끗해서, 섞으면 오히려 얼룩 조각이 생겼다.
-		float k = smoothstep(cut - 2.0, cut, rp.y) * (1.0 - smoothstep(2.0, 4.0, rp.z)) * smoothstep(0.2, 0.8, eye_d)
+		// 입선 위 초록 피부(얼굴·볼·이마) 전체를 덮개와 같은 코 색으로: 텍스처에 칠해진 명암·광택이 덮개와 달라
+		// 눈 사이·옆에 경계선이 보였다(2026-11-24 사용자 요청). 콧구멍·입선·눈알은 초록이 아니라 그대로.
+		float k = smoothstep(5.2, 6.4, rp.y) * smoothstep(0.2, 0.8, eye_d)
 			* (1.0 - smoothstep(0.06, 0.12, abs(hv.x - ref.x)));
 		k = max(max(k, smoothstep(0.0, 0.15, hc0.x)), lidb) * hat_off;   // 모자와 이어져 있던 삼각형의 남은 쪽(그늘)·눈알 뒤
 		c = mix(c, bald, k);

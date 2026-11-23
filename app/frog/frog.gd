@@ -73,7 +73,7 @@ var prop_c := {}      # 소품 가운데(메시 좌표 m)
 var prop_hb := -1     # 골반 bind 번호
 var pr_q := {}
 var prop_on := false
-var scalp_col := Color(0.5, 0.65, 0.2)   # 이마(두 눈 사이) 평균 초록: 정수리 덮개 색, 모자 그늘 밝히기 기준
+var scalp_col := Color(0.5, 0.65, 0.2)   # 코(입 위 앞면) 평균 초록: 민머리 덮개 색
 
 # 자세(37RHHG _pose 를 옮기고 개구리에 맞춘 것)
 # 입 벌리기(2026-11-23). 머리 좌표 cm(머리 뼈 원점, 기본 자세 메시 축: 캐릭터 왼쪽 x·위 y·앞 z).
@@ -371,7 +371,8 @@ func _hat_mark(a: Array, img: Image, ho: Vector3, head_b: int) -> void:
 		var skin := col.g > col.r * 1.15 and col.g > col.b * 1.15
 		var ed := h.distance_to(Vector3(EYE_C.x * signf(h.x), EYE_C.y, EYE_C.z)) - EYE_R
 		var face := h.z > 6.0 and h.y < 11.0 and absf(h.x) < 14.0
-		if skin and h.y > 5.0 and h.y < 9.0 and absf(h.x) < 5.0 and h.z > 12.0:
+		# 코(입 위 앞면) 초록: 민머리 색. 콧구멍(어두운 점)은 뺀다.
+		if skin and h.y > 5.5 and h.y < 9.0 and absf(h.x) < 6.0 and h.z > 15.0 and col.v > 0.45:
 			fore += col
 			n_fore += 1
 		if skin and h.y > -2.0 and h.y < _scalp_cut(h.z) - 0.3 and ed > EYE_KEEP + 0.5 and absf(h.x) < 16.0 and h.length() < 25.0:
