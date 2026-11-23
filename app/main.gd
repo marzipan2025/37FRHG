@@ -158,7 +158,7 @@ var potion_now := -1.0           # 물약 색 바꾼 정도 0~1(셰이더 bloom)
 var potion_col := Color(0.98, 0.80, 0.16)   # 지금 셰이더에 넣은 물약 색(bloom_to). 다른 색으로 바꿀 때 이 색에서 옮겨 간다
 # 모자: set_hat(false) 면 꼭대기부터 반짝이며 녹아 사라지고 set_hat(true) 면 아래부터 다시 생긴다(2026-11-24).
 # 물약 색처럼 다른 기능이 상태 표시로 쓸 것이라 저장하지 않는다. 셰이더 hat_off(0 모자 ~ 1 없음).
-const HAT_TIME := 1.1
+const HAT_TIME := 0.77         # 처음 1.1초의 70%(2026-11-24 사용자 요청)
 const HAT_HEAD := 0.78           # 모자가 없을 때 정수리 높이(모자 끝까지 키 대비)
 var hat_on := true
 var hat_now := 0.0
