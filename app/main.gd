@@ -146,6 +146,10 @@ var potion_want := Color(0.98, 0.80, 0.16)  # 바꿀 물약 색
 var potion_now := -1.0           # 물약 색 바꾼 정도 0~1(셰이더 bloom). -1 은 처음(바로 맞춤)
 var potion_col := Color(0.98, 0.80, 0.16)   # 지금 셰이더에 넣은 물약 색(bloom_to). 다른 색으로 바꿀 때 이 색에서 옮겨 간다
 var actions: Node      # 개구리가 맥에서 하는 일(Claude 도구, actions.gd)
+# 캐릭터 창에서 받은 키만 눌림으로 친다(물리 키 → true). Input.is_physical_key_pressed 는 창과 상관없는 전역이라,
+# 입력칸에서 한글을 치면 입력기가 W(ㅈ)·S(ㄴ) 같은 키의 뗌을 먹어 "계속 눌림"으로 남았다 → 입력칸을 닫으면
+# 캐릭터가 화면 위로 끝까지 걸어가 멈추고 키도 안 먹었다(2026-11-23). 창이 포커스를 잃거나 입력칸을 열면 비운다.
+var held := {}
 var click_wait := -1.0  # 클릭 뒤 두 번째 클릭을 기다리는 남은 시간. 0 아래로 가면 한 번 클릭
 const DOUBLE_CLICK := 0.28               # bubble.gd: 머리 위 말풍선(say(글))
 
@@ -164,6 +168,7 @@ func _ready() -> void:
 		_take_snapshots()
 		return
 	_setup_window()
+	get_window().focus_exited.connect(func(): held.clear())
 	updater = load("res://updater.gd").new()
 	add_child(updater)
 	keystore = load("res://keystore.gd").new()
@@ -369,7 +374,7 @@ func _place() -> void:
 
 func _zoom_step(dt: float) -> void:
 	# 입력칸에 글을 치는 동안은 z 가 글자라 확대하지 않는다(키 상태는 창과 상관없이 전역이라 직접 막는다).
-	var target := ZOOM_MAX if Input.is_physical_key_pressed(KEY_Z) and not _typing() else 1.0
+	var target := ZOOM_MAX if held.has(KEY_Z) and not _typing() else 1.0
 	if zoom_k == target and zoom_v == 0.0:
 		return
 	var n := 4
@@ -490,6 +495,7 @@ func _typing() -> bool:
 func _open_input() -> void:
 	if talk_input == null or snapshot:
 		return
+	held.clear()
 	click_wait = -1.0
 	if not keystore.has_key():
 		bubble.say("먼저 Claude API 키를 넣어 주세요.")
@@ -502,6 +508,7 @@ func _open_input() -> void:
 func _ask_key() -> void:
 	if talk_input == null or snapshot:
 		return
+	held.clear()
 	click_wait = -1.0
 	talk_input.show_input(_feet(), _head_top(), _usable(), true)
 
@@ -613,6 +620,11 @@ func _wander_step(dt: float) -> void:
 # ---------------------------------------------------------------- 입력과 이동
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		if event.pressed and get_window().has_focus() and not _typing():
+			held[event.physical_keycode] = true
+		elif not event.pressed:
+			held.erase(event.physical_keycode)
 	if event is InputEventKey and event.pressed and not event.echo:
 		# 방향키를 둘 같이 누르면 사선 대신 나중에 누른 축으로만 간다.
 		if event.physical_keycode in [KEY_LEFT, KEY_RIGHT, KEY_A, KEY_D]:
@@ -645,7 +657,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _key(a: Key, b: Key) -> float:
-	return 1.0 if Input.is_physical_key_pressed(a) or Input.is_physical_key_pressed(b) or a in demo_keys else 0.0
+	return 1.0 if held.has(a) or held.has(b) or a in demo_keys else 0.0
 
 
 # 확인용 자동 조작: 실행 인자 -- --demo
@@ -685,7 +697,7 @@ func _process(dt: float) -> void:
 	_zoom_step(dt)
 	var d := Vector2(_key(KEY_RIGHT, KEY_D) - _key(KEY_LEFT, KEY_A),
 		_key(KEY_DOWN, KEY_S) - _key(KEY_UP, KEY_W))
-	var shift: bool = Input.is_physical_key_pressed(KEY_SHIFT) or KEY_SHIFT in demo_keys
+	var shift: bool = held.has(KEY_SHIFT) or KEY_SHIFT in demo_keys
 	# 입력칸에 글을 치는 동안은 키가 캐릭터를 움직이지 않고, 돌아다니지도 않고 정면을 본다(37RHHG 처럼).
 	if _typing():
 		d = Vector2.ZERO
