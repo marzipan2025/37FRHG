@@ -48,6 +48,8 @@ const TOOLS := [
 ]
 
 var http: HTTPRequest
+var mail: Node                         # 메일 읽기(mail.gd)
+var calendar: Node                     # 캘린더 일정(calendar.gd)
 var timers: Array = []                 # {id, at(유닉스 초), message, action, target}
 var next_id := 1
 var here := {}                         # IP 로 찾은 위치 {lat, lon, name, t}
@@ -58,6 +60,10 @@ func _ready() -> void:
 	http = HTTPRequest.new()
 	http.timeout = 12.0
 	add_child(http)
+	mail = load("res://mail.gd").new()
+	add_child(mail)
+	calendar = load("res://calendar.gd").new()
+	add_child(calendar)
 	if FileAccess.file_exists(TIMERS):
 		var d = JSON.parse_string(FileAccess.get_file_as_string(TIMERS))
 		if d is Dictionary:
@@ -91,8 +97,17 @@ func _process(dt: float) -> void:
 			timer_fired.emit(msg)
 
 
+# Claude 에 보내는 도구 정의 전부(여기 것 + 메일).
+func tools() -> Array:
+	return TOOLS + mail.TOOLS + calendar.TOOLS
+
+
 # 도구 실행. {"text": 결과 글, "error": bool}
 func run(tool: String, input: Dictionary) -> Dictionary:
+	if tool.ends_with("_mail"):
+		return await mail.run(tool, input)
+	if tool == "list_events":
+		return await calendar.run(tool, input)
 	match tool:
 		"get_weather":
 			return await _weather(String(input.get("place", "")).strip_edges(), input.get("lat"), input.get("lon"))
@@ -121,8 +136,8 @@ func _open_app(app_name: String) -> Dictionary:
 	app_name = app_name.strip_edges()
 	if app_name == "" or app_name.contains("/"):
 		return {"text": "앱 이름이 비었거나 이상해요.", "error": true}
-	var out := []
-	var code := OS.execute("/usr/bin/open", ["-a", app_name], out, true)
+	# 셸을 거치지 않게(OS.execute 에 출력 배열을 주면 셸 명령 줄이 되어 이름 속 $(…) 가 실행될 수 있다).
+	var code: int = mail.run_cmd("/usr/bin/open", PackedStringArray(["-a", app_name]))[0]
 	if code != 0:
 		return {"text": "'%s' 앱을 찾지 못했어요." % app_name, "error": true}
 	return {"text": "'%s' 앱을 열었어요." % app_name, "error": false}

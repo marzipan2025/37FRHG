@@ -23,6 +23,13 @@ if [ -n "$FONT" ]; then
 else
   echo "카카오 빅 산스 없음: 말풍선은 시스템 글꼴"
 fi
+# 캘린더 도우미(EventKit, native/cal.swift)를 앱 안 Contents/MacOS/frhgcal 로. 앱이 부르면 권한이 앱에 붙는다.
+# 앱이 universal 이라 도우미도 arm64·x86_64 를 따로 만들어 lipo 로 합친다.
+CALTMP=$(mktemp -d)
+swiftc -O -target arm64-apple-macos14 native/cal.swift -o "$CALTMP/cal-arm64"
+swiftc -O -target x86_64-apple-macos14 native/cal.swift -o "$CALTMP/cal-x86_64"
+lipo -create "$CALTMP/cal-arm64" "$CALTMP/cal-x86_64" -output "$OUT/Contents/MacOS/frhgcal"
+rm -r "$CALTMP"
 # Apple Development 인증서가 있으면 그걸로 서명한다(없으면 임시 서명).
 ID=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Apple Development" | awk '{print $2}')
 codesign --force --deep -s "${ID:--}" "$OUT"
