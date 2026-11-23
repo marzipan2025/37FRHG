@@ -187,6 +187,16 @@ void fragment() {
 		float bw = smoothstep(belt_y.x - 0.003, belt_y.x + 0.003, yy) * (1.0 - smoothstep(belt_y.y - 0.003, belt_y.y + 0.003, yy));
 		c = mix(c, mix(robe_col, belt_col, bw), away);
 	}
+	// 뒤 병(정점 색 파랑 0, 빨강 1 = 허리에 남는 병)의 흐린 분홍 띠(보라 액체와 위 유리 사이)는 지운다:
+	// 위쪽 빈 유리와 같은 하늘색으로(2026-11-23 사용자 요청, 액체는 아래 보라만). 밝기는 그대로.
+	if (COLOR.b < 0.5 && COLOR.r > 0.75) {
+		vec3 hv = rgb2hsv(c);
+		// 색상 0.62 부터(분홍 띠 위 경계의 흰빛 줄도). 채도는 위 유리와 같게 0.73(처음 0.55 는 더 밝아 보였다).
+		float pk = smoothstep(0.62, 0.66, hv.x) * (1.0 - smoothstep(0.96, 0.99, hv.x))
+			* (1.0 - smoothstep(0.42, 0.52, hv.y)) * smoothstep(0.5, 0.6, hv.z);
+		c = mix(c, hsv2rgb(vec3(0.56, 0.73, hv.z)), pk);
+		if (bloom_debug) c = mix(c, vec3(1.0, 0.0, 1.0), pk);
+	}
 	if ((bloom > 0.001 || bloom_debug) && COLOR.b < 0.5) {
 		vec3 h = rgb2hsv(c);
 		vec3 ht = rgb2hsv(bloom_to);

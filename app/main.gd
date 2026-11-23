@@ -124,9 +124,20 @@ var cam_lift_dir := Vector3.UP
 # 깜빡임: 서 있을 때 3.5~8초마다, 걸을 때 3배 드물게. 점프·달리기 때 가끔 눈을 감는다.
 const RUN_EYES := 0.25
 const JUMP_EYES := 0.25
+# 평소 입 벌리기(37RHHG 와 같은 식, 2026-11-23): 서 있거나 걸을 때 20~50초마다 0.6~1.4초(37RHHG 16~40초의 80% 빈도),
+# 달리는 동안 3~8초마다 35% 확률로 0.5~1.3초, 점프 때 30% 확률로 그 점프 동안, 인사하는 동안. 벌린 정도 0.6.
+# 37RHHG 는 0/0.6 으로 바로 바꾸지만 개구리는 메시 턱이 움직여 MOUTH_EASE 초에 걸쳐 여닫는다.
+const RUN_MOUTH := 0.35
+const JUMP_MOUTH := 0.3
+const IDLE_MOUTH := Vector2(20.0, 50.0)
+const MOUTH_OPEN := 0.6
+const MOUTH_EASE := 0.12
 var face_act := 0
 var eyes_left := 0.0
 var eyes_next := 3.0
+var mouth_left := 0.0          # 평소 벌린 입이 남은 시간
+var mouth_next := 20.0
+var mouth_now := 0.0           # 평소 입 벌린 정도(말할 때는 _chat_step 이 대신 정함)
 var blink_next := 2.0
 var blink_left := 0.0
 
@@ -565,10 +576,12 @@ func _chat_step() -> void:
 		_chatter(DEMO_LINE)
 	while not chat.is_empty() and clock > chat[0][1]:
 		chat.pop_front()
-	var m := 0.0
+	var m := mouth_now
 	if not chat.is_empty() and clock >= chat[0][0]:
 		var c: Array = chat[0]
 		m = c[2] * sin(PI * clampf((clock - c[0]) / (c[1] - c[0]), 0.0, 1.0))
+	elif not chat.is_empty():
+		m = 0.0
 	face_mat.set_shader_parameter("mouth", m)
 
 
@@ -896,6 +909,7 @@ func _prop_step(dt: float, moving: bool) -> void:
 
 func _face_step(dt: float, act: int, idle: bool) -> void:
 	eyes_left -= dt
+	mouth_left -= dt
 	blink_left -= dt
 	if act == 0:
 		blink_next -= dt / (1.0 if idle else 3.0)
@@ -908,17 +922,35 @@ func _face_step(dt: float, act: int, idle: bool) -> void:
 	if act != face_act:
 		if face_act == 2:
 			eyes_left = 0.0
+			mouth_left = 0.0
 		face_act = act
-		if act == 2 and randf() < JUMP_EYES:
-			eyes_left = JUMP_TIME
+		if act == 2:
+			if randf() < JUMP_EYES:
+				eyes_left = JUMP_TIME
+			if randf() < JUMP_MOUTH:
+				mouth_left = JUMP_TIME
 		elif act == 0:
 			eyes_left = 0.0
+			mouth_left = 0.0
+			mouth_next = randf_range(IDLE_MOUTH.x, IDLE_MOUTH.y)
+	if act == 0:
+		mouth_next -= dt
+		if mouth_next <= 0.0:
+			mouth_next = randf_range(IDLE_MOUTH.x, IDLE_MOUTH.y)
+			mouth_left = randf_range(0.6, 1.4)
 	if act == 1:
 		eyes_next -= dt
+		mouth_next -= dt
 		if eyes_next <= 0.0:
 			eyes_next = randf_range(3.0, 8.0)
 			if randf() < RUN_EYES:
 				eyes_left = randf_range(0.5, 1.3)
+		if mouth_next <= 0.0:
+			mouth_next = randf_range(3.0, 8.0)
+			if randf() < RUN_MOUTH:
+				mouth_left = randf_range(0.5, 1.3)
+	var want := MOUTH_OPEN if (mouth_left > 0.0 or greet > 0.2) else 0.0
+	mouth_now = move_toward(mouth_now, want, dt * MOUTH_OPEN / MOUTH_EASE)
 	var closed := eyes_left > 0.0 or blink_left > 0.0 or (greet > 0.2 and greet_eyes)
 	if face_mat:
 		face_mat.set_shader_parameter("blink", 1.0 if closed else 0.0)
