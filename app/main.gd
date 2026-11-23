@@ -139,6 +139,9 @@ var bubble: Node
 var talk_input: Node   # 말 거는 입력칸(talk_input.gd)
 var keystore: Node     # Claude API 키(키체인, keystore.gd)
 var talk: Node         # Claude 와 말하기(talk.gd)
+const TINT_TIME := 0.6           # 옷 색이 다 바뀌는 데 걸리는 시간(초)
+var tint_now := -1.0             # 0 보라(Haiku) ~ 1 검정·터키색(Sonnet). -1 은 아직 안 정함(처음엔 바로 맞춘다)
+var actions: Node      # 개구리가 맥에서 하는 일(Claude 도구, actions.gd)
 var click_wait := -1.0  # 클릭 뒤 두 번째 클릭을 기다리는 남은 시간. 0 아래로 가면 한 번 클릭
 const DOUBLE_CLICK := 0.28               # bubble.gd: 머리 위 말풍선(say(글))
 
@@ -170,9 +173,12 @@ func _ready() -> void:
 	add_child(talk_input)
 	talk_input.setup(screen_scale, bubble.font)
 	talk_input.submitted.connect(_on_talk)
+	actions = load("res://actions.gd").new()
+	add_child(actions)
+	actions.timer_fired.connect(func(msg): bubble.say(msg, 10.0))
 	talk = load("res://talk.gd").new()
 	add_child(talk)
-	talk.setup(keystore)
+	talk.setup(keystore, actions)
 	talk.answered.connect(_on_answer)
 	# 확인용: -- --ask "문장" 이면 2초 뒤 그 말을 보내고 대답을 찍는다(BUBBLE_DUMP 면 대답 뒤 말풍선 그림).
 	var ai := args.find("--ask")
@@ -189,6 +195,10 @@ func _ready() -> void:
 		var dump := OS.get_environment("BUBBLE_DUMP")
 		if dump != "":
 			get_tree().create_timer(2.0).timeout.connect(func(): bubble.dump(dump))
+	# 확인용: FROG_DUMP=경로면 2초 뒤 캐릭터 창 그림을 PNG 로 남긴다.
+	var fdump := OS.get_environment("FROG_DUMP")
+	if fdump != "":
+		get_tree().create_timer(2.0).timeout.connect(func(): get_viewport().get_texture().get_image().save_png(fdump))
 	# 확인용: -- --input 이면 1초 뒤 입력칸을 연다(INPUT_TEXT 를 넣어 둠, INPUT_KEY=1 이면 키 넣기 모양). INPUT_DUMP=경로면 2초 뒤 그림을 남긴다.
 	if "--input" in args:
 		get_tree().create_timer(1.0).timeout.connect(func():
@@ -421,6 +431,16 @@ func _on_click() -> void:
 		_set_wander(true)
 	DisplayServer.window_move_to_foreground()
 	get_window().grab_focus()
+
+
+# 말 모델이 Sonnet 이면 옷 색을 바꾼다(셰이더 tint: 보라 → 검정, 금색 장식 → 터키색). 37RHHG 머리카락 색과 같은 자리.
+func _tint_step(dt: float) -> void:
+	var want := 1.0 if talk != null and talk.sonnet() else 0.0
+	if tint_now == want:
+		return
+	tint_now = want if tint_now < 0.0 else move_toward(tint_now, want, dt / TINT_TIME)
+	for m in frog.mats:
+		m.set_shader_parameter("tint", smoothstep(0.0, 1.0, tint_now))
 
 
 func _typing() -> bool:
@@ -699,6 +719,7 @@ func _process(dt: float) -> void:
 	_greet_step(dt, d != Vector2.ZERO or w > 0.05)
 	_prop_step(dt, d != Vector2.ZERO or w > 0.05)
 	_light_step(dt)
+	_tint_step(dt)
 	bubble.follow(_head_top(), _usable(), dt)
 	talk_input.follow(_feet(), _head_top(), _usable(), dt)
 	_face_step(dt, 2 if jump_u >= 0.0 else (1 if run > 0.5 else 0), w < 0.15)
