@@ -135,6 +135,7 @@ var popup_menu := RID()
 var indicator := -1
 var walk_item := -1
 var updater: Node
+var bubble: Node               # bubble.gd: 머리 위 말풍선(say(글))
 
 var snapshot := false
 var demo := false
@@ -154,8 +155,18 @@ func _ready() -> void:
 	updater = load("res://updater.gd").new()
 	add_child(updater)
 	_setup_menu()
+	bubble = load("res://bubble.gd").new()
+	add_child(bubble)
+	bubble.setup(screen_scale)
 	if "--wander" in args:
 		_set_wander(true)
+	# 확인용: -- --say "문장" 이면 1초 뒤 말풍선을 띄운다(아직 말하게 하는 곳은 없다. AI 붙일 때 씀).
+	var si := args.find("--say")
+	if si >= 0 and si + 1 < args.size():
+		get_tree().create_timer(1.0).timeout.connect(bubble.say.bind(args[si + 1], 600.0))
+		var dump := OS.get_environment("BUBBLE_DUMP")
+		if dump != "":
+			get_tree().create_timer(2.0).timeout.connect(func(): bubble.dump(dump))
 
 
 func _exit_tree() -> void:
@@ -367,10 +378,14 @@ func _set_wander(on: bool) -> void:
 	_menu_check()
 
 
-# 캐릭터를 클릭하면(끌지 않고 뗌) 돌아서서 정면을 보고 멈춘다. 키보드 조작을 받도록 창에 포커스도 준다.
+# 캐릭터를 클릭하면(끌지 않고 뗌) 걷기를 켜고 끈다: 돌아다니던 중이면 돌아서서 정면을 보고 멈추고,
+# 멈춰 있으면 다시 돌아다닌다. 키보드 조작을 받도록 창에 포커스도 준다.
 func _on_click() -> void:
-	_set_wander(false)
-	target_yaw = 0.0
+	if wander:
+		_set_wander(false)
+		target_yaw = 0.0
+	else:
+		_set_wander(true)
 	DisplayServer.window_move_to_foreground()
 	get_window().grab_focus()
 
@@ -415,6 +430,11 @@ func _usable() -> Rect2:
 
 func _feet() -> Vector2:
 	return win_pos + Vector2(WIN_W * 0.5, FEET_Y) * px_scale
+
+
+# 머리(모자) 끝 가운데, 화면 픽셀. 점프하면 같이 올라간다.
+func _head_top() -> Vector2:
+	return _feet() - Vector2(0, (_char_h() + model.position.y / k) * px_scale)
 
 
 func _pick_dir() -> Vector2:
@@ -586,6 +606,7 @@ func _process(dt: float) -> void:
 	_greet_step(dt, d != Vector2.ZERO or w > 0.05)
 	_prop_step(dt, d != Vector2.ZERO or w > 0.05)
 	_light_step(dt)
+	bubble.follow(_head_top(), _usable(), dt)
 	_face_step(dt, 2 if jump_u >= 0.0 else (1 if run > 0.5 else 0), w < 0.15)
 	_pose(w, run, phase, clock, j)
 	_fps_step(dt, w)
