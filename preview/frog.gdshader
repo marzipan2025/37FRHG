@@ -52,12 +52,32 @@ uniform vec3 potion_to : source_color = vec3(0.98, 0.80, 0.16);   // 노랑
 uniform float potion_spread = 0.12;
 uniform bool potion_debug = false;
 
+// 소품 들어 보이기(책 ⑩·앞 유리병 ⑪): 소품 점은 정점 색 빨강(책 0, 병 0.5)으로 표시돼 온다(main.gd _prop_split, 골반에만 묶임).
+// book_m·vial_m 은 월드 → 월드 변환(골반에 붙은 지금 자리 → 손에 든 자리). 단위 행렬이면 허리 그대로.
+// 소품이 붙어 있던 로브 자리(정점 색 초록 책 0·병 0.5, 알파 = 기본 자세 높이 0.30~0.45 m)는 들고 있는 동안(*_away)
+// 허리띠 높이는 갈색, 나머지는 로브 보라로 덮는다.
+uniform mat4 book_m = mat4(1.0);
+uniform mat4 vial_m = mat4(1.0);
+uniform bool book_debug = false;      // 소품 점을 빨강, 붙어 있던 로브 자리를 초록으로
+uniform float book_away = 0.0;
+uniform float vial_away = 0.0;
+uniform vec3 vial_in : source_color = vec3(0.50, 0.30, 0.72);   // 병 속(뚫린 자리 안쪽 면)
+uniform vec3 robe_col : source_color = vec3(0.17, 0.13, 0.32);
+uniform vec3 belt_col : source_color = vec3(0.25, 0.16, 0.08);
+uniform vec2 belt_y = vec2(0.352, 0.396);   // 허리띠 높이(m, 옆구리에서 잼)
+
 varying vec3 hp;      // 머리 좌표(턱 돌리기 전)
 varying float jaw;    // (입선 - y)/jaw_band. 자르지 않아서 보간하면 입선과 나란한 경계가 된다.
                       // 0 위가 윗입술, 0~1 이 늘어나 입 안이 되는 띠, 1 아래는 아래턱 피부
 varying float jaw_w;  // 턱이 움직이는 자리(입꼬리 앞, 옷깃 위)
 
 void vertex() {
+	if (COLOR.r < 0.75) {
+		mat4 pm = COLOR.r < 0.25 ? book_m : vial_m;
+		vec4 bw = pm * (MODEL_MATRIX * vec4(VERTEX, 1.0));
+		VERTEX = (inverse(MODEL_MATRIX) * bw).xyz;
+		NORMAL = normalize(inverse(mat3(MODEL_MATRIX)) * (mat3(pm) * (mat3(MODEL_MATRIX) * NORMAL)));
+	}
 	vec4 w = MODEL_MATRIX * vec4(VERTEX, 1.0);
 	vec3 h = (head_inv * w).xyz * 100.0;
 	hp = h;
@@ -105,6 +125,31 @@ float cover(float d) {
 
 void fragment() {
 	vec3 c = (texture(albedo_tex, UV) * albedo_col).rgb;
+	// 병 속을 메우는 공(UV x -1, y = 병 가운데 기준 높이 -1~1): 아래 진보라 → 자홍 → 연보라 → 하늘색(텍스처에서 잰 병 색).
+	if (UV.x < -1.5) c = robe_col;   // 로브 구멍 막는 판
+	else if (UV.x < -0.5) {
+		float t = UV.y;
+		c = mix(vec3(0.29, 0.12, 0.50), vec3(0.45, 0.14, 0.62), smoothstep(-1.0, -0.5, t));
+		c = mix(c, vec3(0.61, 0.24, 0.69), smoothstep(-0.5, -0.15, t));
+		c = mix(c, vec3(0.55, 0.42, 0.70), smoothstep(-0.15, 0.1, t));
+		c = mix(c, vec3(0.30, 0.55, 0.72), smoothstep(0.1, 0.35, t));
+		c = mix(c, vec3(0.22, 0.48, 0.65), smoothstep(0.35, 1.0, t));
+	}
+	// 책 밑 로브 자리: 텍스처에 책 그늘·끈이 칠해져 있어서 책을 든 동안 로브 보라로 덮는다(아래 tint 도 그대로 먹음).
+	// 병이 로브에 붙어 있던 자리는 뚫려 있어서 들면 안쪽 면이 보인다. 든 병(빨강 0.5)의 뒷면은 병 속 색으로 칠한다.
+	// 앞면이라도 로브 쪽에 칠해져 있던 그늘(어둡고 갈색(코르크·끈)이 아닌 색)은 같이 덮는다.
+	bool vial_pt = COLOR.r > 0.25 && COLOR.r < 0.75;   // 든 병
+	if (vial_away > 0.0 && vial_pt) {
+		vec3 hv = rgb2hsv(c);
+		bool shade = hv.z < 0.3 && !(hv.x > 0.03 && hv.x < 0.16 && hv.y > 0.3);
+		if (!FRONT_FACING || shade) c = mix(c, vial_in, vial_away);
+	}
+	float away = COLOR.g < 0.25 ? book_away : vial_away;
+	if (away > 0.0 && COLOR.r > 0.75 && COLOR.g < 0.75) {
+		float yy = 0.30 + COLOR.a * 0.15;   // 기본 자세 높이(m)
+		float bw = smoothstep(belt_y.x - 0.003, belt_y.x + 0.003, yy) * (1.0 - smoothstep(belt_y.y - 0.003, belt_y.y + 0.003, yy));
+		c = mix(c, mix(robe_col, belt_col, bw), away);
+	}
 	if ((potion > 0.001 || potion_debug) && COLOR.b < 0.5) {
 		vec3 h = rgb2hsv(c);
 		vec3 ht = rgb2hsv(potion_to);
@@ -167,6 +212,8 @@ void fragment() {
 		inside = mix(inside, lip, cover(0.93 - jaw));
 		c = mix(c, inside, smoothstep(0.0, 0.3, mouth) * cover(-jaw) * cover(jaw - 1.0));
 	}
+	if (book_debug && COLOR.r < 0.75) c = vec3(1.0, 0.1, 0.1);
+	if (book_debug && COLOR.r > 0.75 && COLOR.g < 0.75) c = vec3(0.1, 0.9, 0.1);
 	ALBEDO = c;
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;

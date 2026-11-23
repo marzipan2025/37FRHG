@@ -73,6 +73,15 @@ var greet_wave := 0.0
 var greet_eyes := false
 var greet_next := 25.0
 
+# 소품 들어 보이기(frog.gd PROPS): "book" 왼쪽 허리 책을 톡톡 만지고 집어 정면으로 내밀었다가 돌려놓기(4.2초),
+# "vial" 앞 유리병 하나를 꺼내 어깨 높이로 들어 흔들어 보이고 다시 걸기(4.0초).
+# 아직 켜는 곳이 없다(AI 붙일 때 쓸 예정). _start_prop(이름) 을 부르면 정면을 보고 한다. 확인은 -- --props(서 있으면 8초마다 번갈아).
+var prop_act := ""
+var prop_t := -1.0
+var prop_test := false
+var prop_test_next := 2.0
+var prop_test_i := 0
+
 # 혼자 돌아다니기(메뉴바 "걷기"): 걷기 2~6초(25%는 달리기)와 쉬기 1.5~5초를 랜덤하게. 수직·수평으로만.
 var wander := false
 var w_walking := false
@@ -136,6 +145,7 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	snapshot = "--snapshot" in args
 	demo = "--demo" in args
+	prop_test = "--props" in args
 	_build_scene()
 	if snapshot:
 		_take_snapshots()
@@ -508,7 +518,7 @@ func _process(dt: float) -> void:
 	var d := Vector2(_key(KEY_RIGHT, KEY_D) - _key(KEY_LEFT, KEY_A),
 		_key(KEY_DOWN, KEY_S) - _key(KEY_UP, KEY_W))
 	var shift: bool = Input.is_physical_key_pressed(KEY_SHIFT) or KEY_SHIFT in demo_keys
-	if d == Vector2.ZERO and not dragging and wander and greet_t < 0.0:
+	if d == Vector2.ZERO and not dragging and wander and greet_t < 0.0 and prop_t < 0.0:
 		_wander_step(dt)
 		if w_walking:
 			d = w_dir
@@ -574,6 +584,7 @@ func _process(dt: float) -> void:
 		look_target = 0.0 if randf() < 0.35 else randf_range(-LOOK_MAX, LOOK_MAX)
 	look = lerpf(look, look_target * (1.0 - w) * (1.0 - greet), 1.0 - exp(-4.0 * dt))
 	_greet_step(dt, d != Vector2.ZERO or w > 0.05)
+	_prop_step(dt, d != Vector2.ZERO or w > 0.05)
 	_light_step(dt)
 	_face_step(dt, 2 if jump_u >= 0.0 else (1 if run > 0.5 else 0), w < 0.15)
 	_pose(w, run, phase, clock, j)
@@ -617,6 +628,34 @@ func _greet_step(dt: float, moving: bool) -> void:
 	greet_wave = sin(TAU * GREET_WAVES * u) * sin(PI * u) ** 0.3 if u > 0.0 and u < 1.0 else 0.0
 
 
+# ---------------------------------------------------------------- 소품 들어 보이기
+
+func _start_prop(name: String) -> void:
+	if prop_t >= 0.0 or greet_t >= 0.0 or jump_u >= 0.0:
+		return
+	target_yaw = 0.0
+	prop_act = name
+	prop_t = 0.0
+
+
+func _prop_step(dt: float, moving: bool) -> void:
+	if prop_test and prop_t < 0.0 and greet_t < 0.0 and not moving and not dragging and jump_u < 0.0:
+		prop_test_next -= dt
+		if prop_test_next <= 0.0:
+			prop_test_next = 8.0
+			_start_prop(["book", "vial"][prop_test_i % 2])
+			prop_test_i += 1
+	if prop_t < 0.0:
+		return
+	if moving or dragging or jump_u >= 0.0:
+		# 움직이면 손을 거두거나(만지기까지) 소품을 돌려놓는 데로 건너뛴다.
+		prop_t = frog.prop_cancel(prop_act, prop_t)
+	prop_t += dt
+	if prop_t >= frog.prop_len(prop_act):
+		prop_t = -1.0
+		prop_act = ""
+
+
 # ---------------------------------------------------------------- 표정(눈만. 입 벌리기는 없음)
 
 func _face_step(dt: float, act: int, idle: bool) -> void:
@@ -652,7 +691,7 @@ func _face_step(dt: float, act: int, idle: bool) -> void:
 # ---------------------------------------------------------------- 동작
 
 func _pose(w: float, run: float, ph: float, t: float, j: float) -> void:
-	frog.pose(skel, ph, w, run, t, j, 0.0, greet, greet_wave, look)
+	frog.pose(skel, ph, w, run, t, j, 0.0, greet, greet_wave, look, prop_act, prop_t)
 	_face_update()
 
 
@@ -671,7 +710,7 @@ func _face_update() -> void:
 
 func _fps_step(dt: float, w: float) -> void:
 	var active := w > 0.02 or anim_speed > 2.0 or jump_u >= 0.0 or dragging or zoom_v != 0.0 \
-		or zoom_k != 1.0 or greet_t >= 0.0 or absf(angle_difference(yaw, target_yaw)) > 0.01
+		or zoom_k != 1.0 or greet_t >= 0.0 or prop_t >= 0.0 or absf(angle_difference(yaw, target_yaw)) > 0.01
 	calm_t = 0.0 if active else calm_t + dt
 	var want := FPS_IDLE if calm_t > FPS_CALM else FPS_ACTIVE
 	if Engine.max_fps != want:
@@ -684,15 +723,19 @@ func _fps_step(dt: float, w: float) -> void:
 func _take_snapshots() -> void:
 	get_window().size = Vector2i(roundi(WIN_W * 2), roundi(WIN_H * 2))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://snap"))
-	# [이름, 몸 방향, 걷기, 달리기, 걸음 주기, 점프, 인사(손 흔들기), 눈 감음]
+	# [이름, 몸 방향, 걷기, 달리기, 걸음 주기, 점프, 인사(손 흔들기), 눈 감음, 소품(이름), 소품 동작 초(없으면 -1)]
 	var shots := [
-		["idle_front", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0],
-		["walk_side", PI * 0.5, 1.0, 0.0, 0.0, 0.0, null, 0.0],
-		["run_side", PI * 0.5, 1.0, 1.0, 0.25, 0.0, null, 0.0],
-		["walk_back", PI, 1.0, 0.0, 0.0, 0.0, null, 0.0],
-		["jump_front", -0.4, 0.0, 0.0, 0.0, 1.0, null, 0.0],
-		["greet", 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0],
-		["blink", 0.0, 0.0, 0.0, 0.0, 0.0, null, 1.0],
+		["idle_front", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+		["walk_side", PI * 0.5, 1.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+		["run_side", PI * 0.5, 1.0, 1.0, 0.25, 0.0, null, 0.0, "", -1.0],
+		["walk_back", PI, 1.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+		["jump_front", -0.4, 0.0, 0.0, 0.0, 1.0, null, 0.0, "", -1.0],
+		["greet", 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, "", -1.0],
+		["blink", 0.0, 0.0, 0.0, 0.0, 0.0, null, 1.0, "", -1.0],
+		["book_touch", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "book", 0.8],
+		["book_hold", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "book", 2.4],
+		["vial_touch", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 0.7],
+		["vial_hold", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "vial", 2.3],
 	]
 	for s in shots:
 		model.rotation.y = s[1]
@@ -700,6 +743,8 @@ func _take_snapshots() -> void:
 		greet = 0.0 if s[6] == null else 1.0
 		greet_wave = 0.0 if s[6] == null else s[6]
 		face_mat.set_shader_parameter("blink", s[7])
+		prop_act = s[8]
+		prop_t = s[9]
 		_pose(s[2], s[3], s[4], 0.0, s[5])
 		await get_tree().process_frame
 		await RenderingServer.frame_post_draw
