@@ -21,6 +21,9 @@ func _ready() -> void:
 
 # 이 앱 버전: 내보낸 앱의 Info.plist(CFBundleShortVersionString). 개발 실행이면 "".
 func app_version() -> String:
+	# 개발 실행(편집기의 godot)은 Godot.app 안에서 돌아 그 Info.plist(엔진 버전 4.7.2)를 읽었다 → 내보낸 앱에서만.
+	if not OS.has_feature("template"):
+		return ""
 	var plist := _bundle_path().path_join("Contents/Info.plist")
 	if not FileAccess.file_exists(plist):
 		return ""
@@ -36,6 +39,26 @@ func _bundle_path() -> String:
 	if not exe.contains(".app/Contents/MacOS/"):
 		return ""
 	return exe.get_base_dir().get_base_dir().get_base_dir()
+
+
+# 말로 물을 때(Claude 도구 check_update): 대화상자 없이 최신 릴리스 태그만 알아본다. 실패하면 "".
+func latest_tag() -> String:
+	var h := HTTPRequest.new()
+	h.timeout = 10.0
+	add_child(h)
+	var tag := ""
+	if h.request(API, PackedStringArray(["User-Agent: 37FRHG", "Accept: application/vnd.github+json"])) == OK:
+		var res: Array = await h.request_completed
+		if res[0] == HTTPRequest.RESULT_SUCCESS and int(res[1]) == 200:
+			var j = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
+			if j is Dictionary:
+				tag = String(j.get("tag_name", "")).trim_prefix("v")
+	h.queue_free()
+	return tag
+
+
+func is_newer(a: String, b: String) -> bool:
+	return _newer(a, b)
 
 
 func check(manual: bool) -> void:

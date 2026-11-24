@@ -54,6 +54,11 @@ uniform bool bloom_debug = false;
 uniform mat4 book_m = mat4(1.0);
 uniform mat4 vial_m = mat4(1.0);
 uniform float book_away = 0.0;
+uniform float book_hide = 0.0;
+// 소매 속 팔 그늘(2026-11-24): 그림자가 없어서 넓은 소매 입구로 보이는 안쪽 팔(초록)이 바깥처럼 밝았다.
+// 기본 자세(T자) 머리 좌표 |x| 가 소매 끝(sleeve_x, 잰 값 약 26cm)보다 안쪽인 팔 피부를 깊이에 따라 어둡게.
+uniform vec2 sleeve_x = vec2(21.0, 26.5);      // 이 사이에서 sleeve_dark → 1
+uniform float sleeve_dark = 0.22;        // 책 읽기(⑫): 펼친 책(read_book.gd)을 띄우는 동안 허리 책(빨강 0)을 숨긴다
 uniform float vial_away = 0.0;
 uniform vec3 vial_in : source_color = vec3(0.50, 0.30, 0.72);   // 병 속(로브에 붙어 있던 뚫린 자리 안쪽 면)
 uniform vec3 robe_col : source_color = vec3(0.17, 0.13, 0.32);
@@ -183,6 +188,7 @@ float cover(float d) {
 }
 
 void fragment() {
+	if (book_hide > 0.5 && COLOR.r < 0.25) discard;
 	vec3 c = (texture(albedo_tex, UV) * albedo_col).rgb;
 	vec3 glow = vec3(0.0);
 	// 같은 코 색을 넣어도 덮개(둥글게 위를 봄)는 코보다 조금 밝고 흐리게 보여서 채도·밝기를 맞춘다(렌더에서 잰 값).
@@ -340,6 +346,11 @@ void fragment() {
 		if (UV.x < -3.5) c = vec3(1.0, 0.0, 0.0);
 		else if (UV.x < -2.5) c = vec3(0.0, 0.2, 1.0);
 		else if (UV2.x > 0.0) c = UV2.y < rim_r ? vec3(1.0, 0.9, 0.0) : vec3(0.0, 0.8, 0.2);
+	}
+	if (UV.x >= 0.0 && hc0.x < 0.5 && abs(hc0.y) > 12.0 && hc0.z > -18.0 && hc0.z < -1.0) {
+		vec3 sv = rgb2hsv(c);
+		float green = smoothstep(0.12, 0.17, sv.x) * (1.0 - smoothstep(0.36, 0.42, sv.x)) * smoothstep(0.2, 0.3, sv.y);
+		c *= mix(1.0, mix(sleeve_dark, 1.0, smoothstep(sleeve_x.x, sleeve_x.y, abs(hc0.y))), green);
 	}
 	ALBEDO = c;
 	EMISSION = glow;

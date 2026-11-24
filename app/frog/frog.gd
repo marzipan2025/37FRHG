@@ -65,7 +65,22 @@ const PROPS := {
 		"palm": Vector3(0, -1, 0), "f_palm": Vector3(0, -1, 0),
 		"ofs": Vector3(0.0, -5.0, 3.0), "tilt": 0.0, "yaw": 0.0, "push": 0.0, "spin": 14.0, "spins": 2.0, "lean": 0.0,
 		"see_look": 24.0, "see_nod": 14.0, "see_side": 4.0, "show_cock": 7.0},
+	# ⑫ 책 읽기(왼손으로 꺼내 배 앞에 눕혀 펼치고, 오른손으로 페이지를 넘기는 루프, 다시 닫아 넣기). 긴 기다림용.
+	# 들기까지는 책(⑩)과 같고, 들 때 소품 회전은 tilt·yaw 대신 flat(눕혀 앞표지가 위, 페이지 위쪽이 앞)·tilt(보는 쪽으로).
+	"read": {"side": 0, "reach": 0.5, "pat": 0.3, "pats": 1.0, "lift": 0.8, "hold": 0.0,
+		"touch": Vector3(18.3, 44.5, 2.5), "pat_v": Vector3(1.5, 1.2, 0.0), "t_hint": Vector3(1, 0, -0.5),
+		"t_hand": Vector3(0.15, -1, 0.2), "t_palm": Vector3(-1, 0, 0),
+		"wrist": Vector3(5.0, 46.0, 13.5), "p_hint": Vector3(1, -0.8, -0.2), "hand": Vector3(-0.15, 0.1, 1.0),
+		"palm": Vector3(0, 1, 0), "f_palm": Vector3(0, 1, 0),
+		"ofs": Vector3(-3.5, 5.6, 7.0), "tilt": 32.0, "yaw": 0.0, "flat": true, "push": 0.0, "spin": 0.0, "spins": 0.0,
+		"lean": 3.0, "see_look": 22.0, "see_nod": 12.0, "see_side": 4.0, "show_cock": 0.0},
 }
+# 책 읽기 시간(초): 표지 펼치기·닫기 READ_OPEN, 한 장 넘기기 한 바퀴 READ_FLIP. 읽는 동안 READ_NOD 만큼 고개를 숙인다.
+const READ_OPEN := 0.5
+const READ_FLIP := 1.4
+const READ_NOD := 16.0
+const READ_TIP := Vector2(0.3, -0.25)   # 넘길 때 잡는 자리: 바깥 가장자리에서 안쪽(cm), 높이 비율(가운데 0, 위 +0.5)
+const READ_GRAB := 3.0                  # 손목 → 손가락 끝(cm)
 
 var mi_main: MeshInstance3D
 var mats: Array = []
@@ -73,6 +88,9 @@ var prop_c := {}      # 소품 가운데(메시 좌표 m)
 var prop_hb := -1     # 골반 bind 번호
 var pr_q := {}
 var prop_on := false
+var read_stop := -1.0     # 책 읽기를 끝내기 시작하는 때(동작 시작 뒤 초). -1 이면 계속 읽는다
+var read_book = null      # read_book.gd: 펼친 책
+var read_r_now := []      # 오른팔 평소 자세(전역 회전 [팔, 아래팔, 손]) — 페이지 넘길 때 여기서 섞는다
 var scalp_col := Color(0.5, 0.65, 0.2)   # 코(입 위 앞면) 평균 초록: 민머리 덮개 색
 
 # 자세(37RHHG _pose 를 옮기고 개구리에 맞춘 것)
@@ -150,6 +168,8 @@ func build(parent: Node3D) -> Dictionary:
 				mat = sm
 				mats.append(sm)
 	mi_main = mi
+	read_book = load("res://frog/read_book.gd").new()
+	read_book.make(inst)
 	return {"inst": inst, "skel": sk, "mi": mi, "mat": mat}
 
 
@@ -843,11 +863,34 @@ func _add_patch(a: Array, c: Vector3, rr: Vector2, hips: int) -> void:
 
 func prop_len(name: String) -> float:
 	var P: Dictionary = PROPS[name]
+	if name == "read":
+		return 1e9 if read_stop < 0.0 else read_stop + READ_OPEN + P.lift + P.reach
 	return 2.0 * P.reach + P.pat + 2.0 * P.lift + P.hold
+
+
+## 책 읽기를 시작한다(main.gd 가 prop_t 0 으로 "read" 를 시작하기 전에 부른다).
+func read_begin() -> void:
+	read_stop = -1.0
+
+
+## 책 읽기를 끝낸다: 넘기는 중이면 그 장을 다 넘긴 뒤 닫아 넣는다(펼치기 전이면 그 자리에서 되돌아감). 새 시각을 돌려준다.
+func read_end(at: float) -> float:
+	var P: Dictionary = PROPS.read
+	var t_open: float = P.reach + P.pat + P.lift + READ_OPEN
+	if read_stop >= 0.0:
+		return at
+	if at < t_open:
+		read_stop = at
+		return at
+	var n := ceilf((at - t_open) / READ_FLIP)
+	read_stop = t_open + n * READ_FLIP
+	return at
 
 
 ## 들기 전(만지기까지)이면 손을 거두는 데로, 들고 있으면 돌려놓는 데로 건너뛴 시간. 걷기 시작할 때 main.gd 가 쓴다.
 func prop_cancel(name: String, at: float) -> float:
+	if name == "read":
+		return read_end(at)
 	var P: Dictionary = PROPS[name]
 	var t2: float = P.reach + P.pat
 	var t4: float = t2 + P.lift + P.hold
@@ -862,10 +905,35 @@ func prop_cancel(name: String, at: float) -> float:
 
 ## at(초) → r 손 뻗기, pat 만지기(0~1 들림), k 들기, push 한 번 더 앞으로, spin 흔들기(-1~1)
 func prop_phase(name: String, at: float) -> Dictionary:
-	var d := {"r": 0.0, "pat": 0.0, "k": 0.0, "push": 0.0, "spin": 0.0}
+	var d := {"r": 0.0, "pat": 0.0, "k": 0.0, "push": 0.0, "spin": 0.0, "open": 0.0, "flip": -1.0}
 	if name == "" or at < 0.0 or at > prop_len(name):
 		return d
 	var P: Dictionary = PROPS[name]
+	if name == "read":
+		var r1: float = P.reach
+		var r2: float = r1 + P.pat
+		var r3: float = r2 + P.lift
+		var r4: float = r3 + READ_OPEN
+		if at > r1 and at < r2:
+			d.pat = pow(sin(PI * P.pats * (at - r1) / P.pat), 2.0)
+		if read_stop < 0.0 or at < read_stop:
+			d.r = smoothstep(0.0, r1, at)
+			d.k = smoothstep(r2, r3, at)
+			d.open = smoothstep(r3, r4, at)
+			if at > r4:
+				d.flip = fmod(at - r4, READ_FLIP) / READ_FLIP
+			return d
+		# 끝내기: 그때 자리(펼친 정도·든 정도)에서 닫기 → 내리기 → 손 거두기
+		var s0 := read_stop
+		var k0 := smoothstep(r2, r3, s0)
+		var o0 := smoothstep(r3, r4, s0)
+		var s1 := s0 + READ_OPEN * o0
+		d.open = o0 * (1.0 - smoothstep(s0, s1, at)) if o0 > 0.0 else 0.0
+		var s2: float = s1 + P.lift * k0
+		d.k = k0 * (1.0 - smoothstep(s1, s2, at)) if k0 > 0.0 else 0.0
+		var r0 := smoothstep(0.0, r1, s0)        # 손을 다 뻗기 전에 끝내면 그 자리에서 거둔다
+		d.r = r0 * (1.0 - smoothstep(s2, s2 + P.reach * r0, at))
+		return d
 	var t1: float = P.reach
 	var t2: float = t1 + P.pat
 	var t3: float = t2 + P.lift
@@ -911,14 +979,18 @@ func _arm_set(sk: Skeleton3D, S: String, qa: Quaternion, qf: Quaternion, qh: Qua
 func _prop_update(sk: Skeleton3D, name: String, ph: Dictionary, now: Array) -> void:
 	var xf := {"book": Transform3D.IDENTITY, "vial": Transform3D.IDENTITY}
 	var away := {"book": 0.0, "vial": 0.0}
+	var key := "book" if name == "read" else name     # 책 읽기는 허리 책을 쓴다
+	var book_hide := 0.0
+	if read_book:
+		read_book.node.visible = false
 	if name != "" and ph.r > 0.0 and now.size() > 0:
-		away[name] = smoothstep(0.0, 0.2, ph.k)
+		away[key] = smoothstep(0.0, 0.2, ph.k)
 	if name != "" and ph.k > 0.0 and now.size() > 0 and mi_main != null and mi_main.skin != null:
 		var P: Dictionary = PROPS[name]
 		var S := "Left" if P.side == 0 else "Right"
 		var hb := sk.find_bone("Hips")
 		var hn := sk.find_bone(S + "Hand")
-		var c0: Vector3 = sk.get_bone_global_rest(hb) * mi_main.skin.get_bind_pose(prop_hb) * (prop_c[name] as Vector3)
+		var c0: Vector3 = sk.get_bone_global_rest(hb) * mi_main.skin.get_bind_pose(prop_hb) * (prop_c[key] as Vector3)
 		var hips_d := sk.get_bone_global_pose(hb) * sk.get_bone_global_rest(hb).affine_inverse()
 		var rest_n := hips_d * Transform3D(Basis(), c0)
 		rest_n.basis = rest_n.basis.orthonormalized()
@@ -938,16 +1010,88 @@ func _prop_update(sk: Skeleton3D, name: String, ph: Dictionary, now: Array) -> v
 		var sw := Basis(chest * fwd, deg_to_rad(P.spin * ph.spin))
 		var o: Vector3 = h_p.origin + sw * (chest * (out * P.ofs.x + Vector3.UP * P.ofs.y + fwd * P.ofs.z))
 		var rot := sw * chest * Basis(Vector3.RIGHT, deg_to_rad(P.tilt)) * Basis(Vector3.UP, deg_to_rad(P.yaw))
+		if P.get("flat", false):
+			# 허리 책(앞표지가 바깥 +x, 위가 +y)을 눕혀 앞표지가 위, 책 위쪽이 앞으로. tilt 만큼 보는 쪽으로 기울인다.
+			rot = chest * Basis(Vector3.RIGHT, deg_to_rad(P.tilt)) * Basis(Vector3.UP, PI * 0.5) * Basis(Vector3.BACK, PI * 0.5)
 		var g_c := h_t.affine_inverse() * rest_n
 		var g_p := h_p.affine_inverse() * Transform3D(rot, o)
 		var cur := h_n * g_c.interpolate_with(g_p, smoothstep(0.0, 1.0, ph.k))
 		var sg := sk.global_transform
-		xf[name] = sg * cur * rest_n.affine_inverse() * sg.affine_inverse()
+		xf[key] = sg * cur * rest_n.affine_inverse() * sg.affine_inverse()
+		if name == "read" and ph.k >= 0.999 and read_book:
+			_read_update(sk, sg, cur, ph)
+			book_hide = 1.0
 	for m in mats:
 		m.set_shader_parameter("book_m", Projection(xf.book))
 		m.set_shader_parameter("vial_m", Projection(xf.vial))
 		m.set_shader_parameter("book_away", away.book)
+		m.set_shader_parameter("book_hide", book_hide)
 		m.set_shader_parameter("vial_away", away.vial)
+
+
+# 펼친 책을 손에 든 허리 책 자리에 띄우고, 표지를 펼치고, 오른손으로 페이지를 넘긴다.
+# cur: 뼈대 좌표에서 허리 책(쉬는 자리 축) → 지금 자리. 책 좌표 축(X 가로, Y 펼친 면, Z 위쪽)은 쉬는 자리 축으로
+# X = 앞(z), Y = 바깥(+x), Z = 위(y) 이다(flat 회전이 이것을 왼쪽·위·앞으로 돌린다).
+func _read_update(sk: Skeleton3D, sg: Transform3D, cur: Transform3D, ph: Dictionary) -> void:
+	var RB = read_book
+	var bk := Basis(Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3(0, 1, 0))
+	var fb := cur.basis.orthonormalized() * bk
+	var center := Vector3(RB.W * 0.5, RB.BLOCK, 0.0)       # 덮인 책 가운데(책 좌표) = 허리 책 가운데
+	var F := Transform3D(fb, cur.origin - fb * center)
+	RB.node.global_transform = sg * F
+	RB.node.visible = true
+	RB.build_static(smoothstep(0.0, 1.0, float(ph.open)))
+	# 넘기는 한 장과 오른손. u: 0~0.22 손을 가장자리로, 0.22~0.5 잡고 세우기(φ 0 → 0.55π),
+	# 0.5~0.8 놓으면 왼쪽으로 넘어감(φ → π, 끝이 늦게 따라와 휨), 손은 돌아감.
+	var u: float = float(ph.flip)
+	var phi := 0.0
+	var bend := 0.0
+	var show := false
+	var hold := 0.0      # 손이 잡고 있는 정도(1 이면 손끝 = 장 끝)
+	if u >= 0.0:
+		if u < 0.22:
+			hold = smoothstep(0.0, 0.22, u)
+		elif u < 0.5:
+			var v := smoothstep(0.22, 0.5, u)
+			phi = PI * 0.55 * v
+			bend = -0.5 * sin(PI * v)
+			hold = 1.0
+			show = true
+		elif u < 0.8:
+			var v := smoothstep(0.5, 0.8, u)
+			phi = lerpf(PI * 0.55, PI, v)
+			bend = -0.6 * sin(PI * v)
+			hold = 1.0 - smoothstep(0.5, 0.65, u)
+			show = true
+	RB.build_page(phi, bend, show)
+	if read_r_now.size() < 3:
+		return
+	# 오른손: 장 끝(잡는 자리) 또는 그 위에 떠 있기
+	var tip_r: float = RB.W - READ_TIP.x
+	var zt: float = RB.H * READ_TIP.y
+	var grab := Vector3(-cos(phi) * tip_r, RB.BLOCK + 0.1 + sin(phi) * tip_r, zt)
+	var hover := Vector3(-tip_r + 0.5, RB.BLOCK + 2.2, zt - 0.5)
+	var target: Vector3 = F * hover.lerp(grab if phi < PI * 0.56 else hover, hold)
+	var pa := sk.get_bone_global_rest(sk.find_bone("RightArm")).origin
+	var pf := sk.get_bone_global_rest(sk.find_bone("RightForeArm")).origin
+	var phd := sk.get_bone_global_rest(sk.find_bone("RightHand")).origin
+	var up := Vector3.UP
+	var lat := sk.get_bone_global_rest(sk.find_bone("LeftUpLeg")).origin - sk.get_bone_global_rest(sk.find_bone("RightUpLeg")).origin
+	lat.y = 0.0
+	lat = lat.normalized()
+	var fdir := (target - pa).normalized()
+	var wrist := target - fdir * READ_GRAB
+	var ik := _ik(pa, wrist, pa.distance_to(pf), pf.distance_to(phd), -lat - up * 0.6)
+	var palm := -(fb * Vector3.UP)          # 손바닥은 페이지 쪽(아래)
+	var u0 := (pf - pa).normalized()
+	var f0 := (phd - pf).normalized()
+	var p0 := -up * PALM_SIGN
+	var qa := _seg_q(u0, p0, ik[0], palm)
+	var qf := _seg_q(f0, p0, ik[1], palm)
+	var qh := _seg_q(f0, p0, fdir, palm)
+	var w := smoothstep(0.0, 1.0, float(ph.open))
+	_arm_set(sk, "Right", (read_r_now[0] as Quaternion).slerp(qa, w), (read_r_now[1] as Quaternion).slerp(qf, w),
+		(read_r_now[2] as Quaternion).slerp(qh, w))
 
 
 func _rot(sk: Skeleton3D, name: String, axis: Vector3, deg: float, extra := Quaternion.IDENTITY) -> void:
@@ -1054,6 +1198,8 @@ func pose(sk: Skeleton3D, p: float, w: float, run: float, t: float, j: float, le
 		_rot(sk, S + "Arm", up, 0.0, q_arm)
 		_rot(sk, S + "ForeArm", up, 0.0, q_fore)
 		_rot(sk, S + "Hand", up, 0.0)
+		if side == 1:
+			read_r_now = [q_arm, q_arm * q_fore, q_arm * q_fore]
 	var hb := sk.find_bone("Hips")
 	_rot(sk, "Hips", up, twist * sin(a0), Quaternion(fwd, deg_to_rad(2.0 * w * cos(a0))))
 	var drop := bob * (0.5 + 0.5 * cos(2.0 * a0)) + 6.0 * j
@@ -1068,7 +1214,7 @@ func pose(sk: Skeleton3D, p: float, w: float, run: float, t: float, j: float, le
 	var nod: float = (-2.0 + 1.5 * cos(2.0 * a0)) * w - lean * 0.5 + 1.0 * breath * idle - 2.0 * float(bph.k)
 	var pcock := 0.0
 	if act != "":
-		nod += float(PP.see_nod) * bsee
+		nod += float(PP.see_nod) * bsee + READ_NOD * float(bph.open)
 		look += float(PP.see_look) * bsee * pside
 		pcock = float(PP.show_cock) * float(bph.k) * -pside
 	var tilt := -2.0 * w * cos(a0) + 2.5 * sin(t * TAU * 0.13) * idle + cock + pcock

@@ -161,14 +161,18 @@ static func run_cmd(path: String, args: PackedStringArray) -> Array:
 	if info.is_empty():
 		return [-1, "실행 못 함: " + path]
 	var buf := PackedByteArray()
+	var pid: int = info.pid
+	# 출력이 끝날 때까지 읽는다. 예전엔 한 번 덜 찬 덩어리가 오면 멈춰서, 파이프 크기(64KB)보다 긴 출력
+	# (lsappinfo list 약 95KB)은 명령이 쓰기에서 막혀 끝나지 않았다(2026-11-24).
 	for pipe in [info.stdio, info.stderr]:
 		var io: FileAccess = pipe
 		while true:
 			var chunk := io.get_buffer(65536)
 			buf.append_array(chunk)
-			if chunk.size() < 65536:
-				break
-	var pid: int = info.pid
+			if chunk.is_empty():
+				if not OS.is_process_running(pid):
+					break
+				OS.delay_msec(2)
 	while OS.is_process_running(pid):
 		OS.delay_msec(5)
 	return [OS.get_process_exit_code(pid), buf.get_string_from_utf8()]

@@ -25,6 +25,9 @@ const TOOLS := [
 		"description": "맥 앱을 이름으로 연다(예: Safari, Notes, Calendar, Music, Finder, Figma).",
 		"input_schema": {"type": "object", "properties": {
 			"name": {"type": "string", "description": "앱 이름(영문 이름이 확실하다)."}}, "required": ["name"]}},
+	{"name": "list_open_apps",
+		"description": "지금 맥에서 열려 있는(Dock 에 떠 있는) 앱의 개수와 이름, 맨 앞에 있는(지금 쓰고 있는) 앱, 화면에 보이는 순서, 숨겨 둔 앱을 알아본다. '지금 뭐 쓰고 있어?', '맨 앞 앱이 뭐야?'에도 쓴다. 이 개구리 앱(37FRHG)은 뺀다.",
+		"input_schema": {"type": "object", "properties": {}}},
 	{"name": "open_url",
 		"description": "웹 주소(http/https)를 기본 브라우저로 연다.",
 		"input_schema": {"type": "object", "properties": {
@@ -50,6 +53,7 @@ const TOOLS := [
 var http: HTTPRequest
 var mail: Node                         # 메일 읽기(mail.gd)
 var calendar: Node                     # 캘린더 일정(calendar.gd)
+var notify: Node                       # 알림 센터 알림 읽기(notify.gd)
 var timers: Array = []                 # {id, at(유닉스 초), message, action, target}
 var next_id := 1
 var here := {}                         # IP 로 찾은 위치 {lat, lon, name, t}
@@ -64,6 +68,9 @@ func _ready() -> void:
 	add_child(mail)
 	calendar = load("res://calendar.gd").new()
 	add_child(calendar)
+	notify = load("res://notify.gd").new()
+	notify.mail = mail
+	add_child(notify)
 	if FileAccess.file_exists(TIMERS):
 		var d = JSON.parse_string(FileAccess.get_file_as_string(TIMERS))
 		if d is Dictionary:
@@ -99,7 +106,7 @@ func _process(dt: float) -> void:
 
 # Claude 에 보내는 도구 정의 전부(여기 것 + 메일).
 func tools() -> Array:
-	return TOOLS + mail.TOOLS + calendar.TOOLS
+	return TOOLS + mail.TOOLS + calendar.TOOLS + notify.TOOLS
 
 
 # 도구 실행. {"text": 결과 글, "error": bool}
@@ -108,6 +115,8 @@ func run(tool: String, input: Dictionary) -> Dictionary:
 		return await mail.run(tool, input)
 	if tool == "list_events":
 		return await calendar.run(tool, input)
+	if tool == "list_notifications":
+		return await notify.run(tool, input)
 	match tool:
 		"get_weather":
 			return await _weather(String(input.get("place", "")).strip_edges(), input.get("lat"), input.get("lon"))
@@ -115,6 +124,8 @@ func run(tool: String, input: Dictionary) -> Dictionary:
 			return _open_app(String(input.get("name", "")))
 		"open_url":
 			return _open_url(String(input.get("url", "")))
+		"list_open_apps":
+			return await _open_apps()
 		"set_timer":
 			return _set_timer(input)
 		"list_timers":
@@ -141,6 +152,62 @@ func _open_app(app_name: String) -> Dictionary:
 	if code != 0:
 		return {"text": "'%s' 앱을 찾지 못했어요." % app_name, "error": true}
 	return {"text": "'%s' 앱을 열었어요." % app_name, "error": false}
+
+
+# 열린 앱(2026-11-24): lsappinfo(권한 필요 없음). `list` 에서 type="Foreground"(Dock 에 뜨는 보통 앱)만 고르고,
+# `visibleProcessList`(앞에서 뒤 순서, 숨긴 앱은 빠짐)로 순서·맨 앞·숨김을 정한다. 이 앱(37FRHG)은 뺀다.
+func _open_apps() -> Dictionary:
+	var r: Array = await mail._run("/usr/bin/lsappinfo", PackedStringArray(["list"]))
+	if int(r[0]) != 0:
+		return {"text": "열린 앱을 알아보지 못했어요.", "error": true}
+	var apps := {}        # ASN → 이름
+	var order := []       # list 순서(대략 연 순서)
+	var name := ""
+	var asn := ""
+	for line in String(r[1]).split("\n"):
+		var t := line.strip_edges()
+		var q1 := t.find(") \"")
+		if q1 > 0 and t.left(q1).is_valid_int():
+			var q2 := t.find("\" ASN:", q1 + 3)
+			if q2 > 0:
+				name = t.substr(q1 + 3, q2 - q1 - 3)
+				asn = t.substr(q2 + 6).get_slice(":", 0)
+			continue
+		if asn != "" and t.contains("type=\"Foreground\""):
+			if name != "37FRHG":
+				apps[asn] = name
+				order.append(asn)
+			asn = ""
+	var fr: Array = await mail._run("/usr/bin/lsappinfo", PackedStringArray(["front"]))
+	var front_asn := String(fr[1]).strip_edges().trim_prefix("ASN:").trim_suffix(":")
+	var v: Array = await mail._run("/usr/bin/lsappinfo", PackedStringArray(["visibleProcessList"]))
+	var shown := []
+	for part in String(v[1]).split("ASN:"):
+		var id := "ASN:" + part.get_slice("-\"", 0).strip_edges()
+		var a2 := id.substr(4)
+		if apps.has(a2) and not (a2 in shown):
+			shown.append(a2)
+	if apps.is_empty():
+		return {"text": "열린 앱이 없어요(개구리 앱 빼고).", "error": false}
+	var names := PackedStringArray()
+	for a in shown:
+		names.append(apps[a])
+	var hidden := PackedStringArray()
+	for a in order:
+		if not (a in shown):
+			hidden.append(apps[a])
+	var txt := "열린 앱 %d개(이 개구리 앱 빼고)." % apps.size()
+	# 맨 앞: lsappinfo front(키보드를 받는 앱). 개구리(입력칸)가 맨 앞이면 그 바로 뒤의 보이는 앱.
+	var front := String(apps.get(front_asn, ""))
+	if front == "" and not names.is_empty():
+		front = names[0] + "(개구리 입력칸 바로 뒤)"
+	if front != "":
+		txt += " 맨 앞(지금 쓰는 앱): %s." % front
+	if not names.is_empty():
+		txt += " 보이는 순서(앞→뒤): %s." % ", ".join(names)
+	if not hidden.is_empty():
+		txt += " 숨겨 두었거나 창이 없는 앱: %s." % ", ".join(hidden)
+	return {"text": txt, "error": false}
 
 
 func _open_url(url: String) -> Dictionary:

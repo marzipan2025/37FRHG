@@ -81,6 +81,10 @@ var prop_t := -1.0
 var prop_test := false
 var prop_test_next := 2.0
 var prop_test_i := 0
+# 책 읽기(⑫, 2026-11-24): 긴 기다림에만 쓴다(사용자: "긴 검색 로딩에 제한적으로"). 말 걸고 대답이 READ_WAIT 초 넘게
+# 안 오면(도구를 쓰는 긴 대답) 서 있을 때 책을 꺼내 펼쳐 페이지를 넘기고, 대답이 오면 그 장을 다 넘긴 뒤 닫아 넣는다.
+const READ_WAIT := 2.5
+var wait_t := 0.0
 
 # 혼자 돌아다니기(메뉴바 "걷기"): 걷기 2~6초(25%는 달리기)와 쉬기 1.5~5초를 랜덤하게. 수직·수평으로만.
 var wander := false
@@ -219,6 +223,8 @@ func _ready() -> void:
 	talk.setup(keystore, actions)
 	talk.hat_get = func() -> bool: return hat_on
 	talk.hat_set = set_hat
+	talk.updater = updater
+	talk.body_state = _body_state
 	talk.answered.connect(_on_answer)
 	# 확인용: -- --ask "문장" 이면 2초 뒤 그 말을 보내고 대답을 찍는다(BUBBLE_DUMP 면 대답 뒤 말풍선 그림).
 	var ai := args.find("--ask")
@@ -243,6 +249,15 @@ func _ready() -> void:
 	var pi_ := args.find("--potion")
 	if pi_ >= 0 and pi_ + 1 < args.size():
 		get_tree().create_timer(1.0).timeout.connect(set_potion.bind(Color.html(args[pi_ + 1])))
+	# 확인용: -- --memory-tidy 면 2초 뒤 기억 정리를 바로 한다(한 달이 안 됐어도).
+	if "--memory-tidy" in args:
+		get_tree().create_timer(2.0).timeout.connect(func(): talk.memory.tidy(true))
+	# 확인용: -- --read [초] 면 1초 뒤 책 읽기를 시작해 그 초(기본 8) 뒤 끝낸다.
+	var ri := args.find("--read")
+	if ri >= 0:
+		var secs := float(args[ri + 1]) if ri + 1 < args.size() and args[ri + 1].is_valid_float() else 8.0
+		get_tree().create_timer(1.0).timeout.connect(func(): _start_prop("read"))
+		get_tree().create_timer(1.0 + secs).timeout.connect(func(): if prop_act == "read": prop_t = frog.read_end(prop_t))
 	# 확인용: -- --hat 이면 3초마다 모자를 없앴다 다시 씌운다.
 	if "--hat" in args:
 		var ht := Timer.new()
@@ -523,6 +538,17 @@ func _potion_step(dt: float) -> void:
 	for m in frog.mats:
 		m.set_shader_parameter("bloom", smoothstep(0.0, 1.0, potion_now))
 		m.set_shader_parameter("bloom_to", potion_col)
+
+
+# 말할 때 Claude 에게 알려 주는 지금 몸 상태(talk.gd 시스템 프롬프트 '지금 상태').
+func _body_state() -> String:
+	var doing := "서 있다"
+	if prop_act == "read":
+		doing = "책을 꺼내 읽고 있다(대답을 기다리는 동안)"
+	elif anim_speed > 2.0:
+		doing = "걷고 있다"
+	var mode := "혼자 돌아다니기 켬" if wander else "혼자 돌아다니기 끔(멈춰 있음)"
+	return "%s, %s" % [doing, mode]
 
 
 func set_hat(on: bool) -> void:
@@ -858,6 +884,7 @@ func _process(dt: float) -> void:
 		look_target = 0.0 if randf() < 0.35 else randf_range(-LOOK_MAX, LOOK_MAX)
 	look = lerpf(look, look_target * (1.0 - w) * (1.0 - greet) * (0.0 if _typing() else 1.0), 1.0 - exp(-4.0 * dt))
 	_greet_step(dt, d != Vector2.ZERO or w > 0.05)
+	_read_step(dt, d != Vector2.ZERO or w > 0.05)
 	_prop_step(dt, d != Vector2.ZERO or w > 0.05)
 	_light_step(dt)
 	_tint_step(dt)
@@ -912,9 +939,21 @@ func _greet_step(dt: float, moving: bool) -> void:
 func _start_prop(name: String) -> void:
 	if prop_t >= 0.0 or greet_t >= 0.0 or jump_u >= 0.0:
 		return
+	if name == "read":
+		frog.read_begin()
 	target_yaw = 0.0
 	prop_act = name
 	prop_t = 0.0
+
+
+# 대답을 오래 기다리면 책 읽기를 시작하고, 기다림이 끝나면 끝낸다.
+func _read_step(dt: float, moving: bool) -> void:
+	var waiting: bool = talk != null and talk.is_busy()
+	wait_t = wait_t + dt if waiting else 0.0
+	if waiting and wait_t > READ_WAIT and prop_t < 0.0 and not moving and not dragging and greet_t < 0.0 and jump_u < 0.0:
+		_start_prop("read")
+	if not waiting and prop_act == "read" and prop_t >= 0.0:
+		prop_t = frog.read_end(prop_t)
 
 
 func _prop_step(dt: float, moving: bool) -> void:
@@ -1051,6 +1090,18 @@ func _take_snapshots() -> void:
 			m.set_shader_parameter("bloom", 1.0)
 			m.set_shader_parameter("bloom_to", Color.html(pc))
 			m.set_shader_parameter("bloom_debug", OS.get_environment("POTION_DEBUG") == "1")
+	# READ 가 있으면 책 읽기 확인용: 정면·3/4 로 꺼내기 → 펼치기 → 넘기기(u) 몇 순간. READ=시각들(쉼표)이면 그 시각만 정면.
+	if OS.get_environment("READ") != "":
+		frog.read_begin()
+		var times := [1.0, 1.6, 1.95, 2.1, 2.1 + 1.4 * 0.15, 2.1 + 1.4 * 0.4, 2.1 + 1.4 * 0.6, 2.1 + 1.4 * 0.72]
+		if OS.get_environment("READ") != "1":
+			times = Array(OS.get_environment("READ").split(",")).map(func(x): return float(x))
+		var yaw := float(OS.get_environment("READ_YAW")) if OS.get_environment("READ_YAW") != "" else 0.0
+		if OS.get_environment("READ_STOP") != "":
+			frog.read_stop = float(OS.get_environment("READ_STOP"))
+		shots = []
+		for i in times.size():
+			shots.append(["read_%02d" % i, yaw, 0.0, 0.0, 0.0, 0.0, null, 0.0, "read", times[i]])
 	# HAT 이 있으면 모자 확인용으로 서 있는 모습만 정면·3/4·옆·뒤에서
 	if OS.get_environment("HAT") != "":
 		shots = [["hat_front", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
