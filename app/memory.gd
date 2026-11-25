@@ -6,10 +6,13 @@ extends Node
 ##   지난 일을 빼서 짧은 사실 목록으로 다시 쓴다. 대답이 끝난 뒤 한가할 때 한다(대답이 늦어지지 않게).
 ##   정리 전 내용은 user://memory.bak.json 에 남긴다.
 ## 내용은 print·로그에 남기지 않는다(개수·글자 수만).
+## 개구리 자신(2026-11-25 사용자: "이름을 정해 줬는데 기억 못 함"): 처음엔 사용자에 대한 사실만 적게 해서, 사용자가 정해 준
+## 개구리 이름이 적히지 않고 최근 12마디 대화 기록에서 밀려나 잊혔다. 이제 remember(about "self")로 이름·별명·말투 같은
+## 개구리 자신에 대한 것도 적고(항목 "w": "self"), 프롬프트에 따로 보이며, 한 달 정리에서는 건드리지 않는다.
 
 const PATH := "user://memory.json"
 const BAK := "user://memory.bak.json"
-const ITEM_CHARS := 120        # 한 줄 최대
+const ITEM_CHARS := 200        # 한 줄 최대(120 이면 계정 설명 같은 긴 사실이 중간에서 잘렸다, 2026-11-25)
 const MAX_CHARS := 2000        # 이보다 길어지면 한 달이 안 됐어도 정리
 const TIDY_DAYS := 30
 const TIDY_LINES := 25         # 정리 뒤 최대 줄 수
@@ -19,10 +22,11 @@ const API_VERSION := "2026-10-21"
 
 const TOOLS := [
 	{"name": "remember",
-		"description": "사용자에 대해 오래 두고 쓸 만한 사실을 이 맥에 적어 둔다. 사용자가 시키지 않아도, 대화에서 이름·호칭, 가족·반려동물, 사는 곳·일하는 곳, 하는 일, 좋아하는 것·싫어하는 것, 습관, 생일·기념일 같은 것을 새로 알게 되면 부른다. 이미 기억하는 것, 잠깐의 일(오늘 기분, 지금 하려는 일), 비밀번호·카드·계좌·주민번호·API 키 같은 민감한 정보는 적지 않는다. 이전 기억이 바뀌었으면 replace 에 그 기억의 일부를 넣는다.",
+		"description": "오래 두고 쓸 만한 사실을 이 맥에 적어 둔다. about 'self' 는 사용자가 너(개구리)에게 정해 준 것(너의 이름·별명, 말투, 성격, 사용자와의 약속 같은 것)으로, 사용자가 정해 주면 반드시 부른다. about 'user'(기본)는 사용자에 대한 사실로, 사용자가 시키지 않아도, 대화에서 이름·호칭, 가족·반려동물, 사는 곳·일하는 곳, 하는 일, 좋아하는 것·싫어하는 것, 습관, 생일·기념일 같은 것을 새로 알게 되면 부른다. 이미 기억하는 것, 잠깐의 일(오늘 기분, 지금 하려는 일), 비밀번호·카드·계좌·주민번호·API 키 같은 민감한 정보는 적지 않는다. 이전 기억이 바뀌었으면 replace 에 그 기억의 일부를 넣는다.",
 		"input_schema": {"type": "object", "properties": {
 			"fact": {"type": "string", "description": "짧은 한 문장, 사용자 기준(예: '이름은 병수, 병수님이라고 불러 주길 원함')."},
-			"replace": {"type": "string", "description": "바뀐 이전 기억의 일부 글자(없으면 비움)."}},
+			"replace": {"type": "string", "description": "바뀐 이전 기억의 일부 글자(없으면 비움)."},
+			"about": {"type": "string", "enum": ["user", "self"], "description": "user: 사용자에 대한 것(기본), self: 너(개구리)에 대해 사용자가 정해 준 것."}},
 			"required": ["fact"]}},
 	{"name": "forget",
 		"description": "사용자가 잊어 달라고 한 기억을 지운다. what 에 그 기억의 일부 글자, 모두 잊어 달라면 'all'.",
@@ -67,10 +71,16 @@ func _chars() -> int:
 func prompt() -> String:
 	if data.items.is_empty():
 		return ""
+	var me := PackedStringArray()
 	var lines := PackedStringArray()
 	for it in data.items:
-		lines.append("- " + String(it.t))
-	return "사용자에 대해 기억하는 것(이 맥에 저장한 메모, 지난 대화에서 들은 것이라 바뀌었을 수 있다):\n" + "\n".join(lines) + "\n"
+		(me if it.get("w", "") == "self" else lines).append("- " + String(it.t))
+	var out := ""
+	if not me.is_empty():
+		out += "너(개구리) 자신에 대해 사용자가 정해 준 것(이름·별명·말투 등, 이것을 따른다):\n" + "\n".join(me) + "\n"
+	if not lines.is_empty():
+		out += "사용자에 대해 기억하는 것(이 맥에 저장한 메모, 지난 대화에서 들은 것이라 바뀌었을 수 있다):\n" + "\n".join(lines) + "\n"
+	return out
 
 
 static func _sensitive(t: String) -> bool:
@@ -99,17 +109,21 @@ func run(tool: String, inp: Dictionary) -> Dictionary:
 		if _sensitive(fact):
 			return {"text": "민감한 정보라 적지 않았어요.", "error": true}
 		fact = fact.left(ITEM_CHARS)
+		var w := "self" if String(inp.get("about", "")) == "self" else ""
 		var today := Time.get_date_string_from_system()
+		var item := {"t": fact, "d": today}
+		if w != "":
+			item["w"] = w
 		if rep != "":
 			for i in data.items.size():
-				if String(data.items[i].t).contains(rep):
-					data.items[i] = {"t": fact, "d": today}
+				if String(data.items[i].get("w", "")) == w and String(data.items[i].t).contains(rep):
+					data.items[i] = item
 					_save()
 					return {"text": "기억을 고쳤어요.", "error": false}
 		for it in data.items:
 			if String(it.t) == fact:
 				return {"text": "이미 기억하고 있어요.", "error": false}
-		data.items.append({"t": fact, "d": today})
+		data.items.append(item)
 		_save()
 		return {"text": "기억했어요.", "error": false}
 	if tool == "forget":
@@ -148,7 +162,11 @@ func tidy(force := false) -> void:
 	tidying = true
 	var lines := PackedStringArray()
 	for it in data.items:
-		lines.append("- (%s) %s" % [it.get("d", "?"), it.t])
+		if it.get("w", "") != "self":   # 개구리 자신에 대한 것은 정리하지 않는다
+			lines.append("- (%s) %s" % [it.get("d", "?"), it.t])
+	if lines.size() < 2:
+		tidying = false
+		return
 	var ask := ("아래는 한 사람에 대해 지난 대화에서 적어 둔 메모다(괄호는 적은 날짜). 오늘은 %s. 다음처럼 정리해라:\n"
 		+ "- 같은 뜻은 하나로 합치고, 바뀐 것은 최근 것만 남긴다.\n"
 		+ "- 이미 지난 일·한때의 일(지난 약속, 그때의 기분 등)은 뺀다. 오래 쓸 사실만.\n"
@@ -183,12 +201,13 @@ func tidy(force := false) -> void:
 	var before_chars := _chars()
 	_save(BAK)
 	var today := Time.get_date_string_from_system()
-	var items := []
+	var items: Array = data.items.filter(func(it): return it.get("w", "") == "self")
+	var keep: int = items.size()
 	for s in arr:
 		var t := String(s).strip_edges().left(ITEM_CHARS)
 		if t != "" and not _sensitive(t):
 			items.append({"t": t, "d": today})
-	data.items = items.slice(0, TIDY_LINES)
+	data.items = items.slice(0, keep + TIDY_LINES)
 	data.tidied = today
 	_save()
 	print("memory: 정리 %d줄 %d자 → %d줄 %d자" % [before, before_chars, data.items.size(), _chars()])
