@@ -54,6 +54,7 @@ var http: HTTPRequest
 var mail: Node                         # 메일 읽기(mail.gd)
 var calendar: Node                     # 캘린더 일정(calendar.gd)
 var music: Node                        # 음악 앱(music.gd)
+var turn := 0                          # 사용자 말 수(talk.gd 가 올림). 캘린더 바꾸기·지우기 확인에 쓴다
 var notify: Node                       # 알림 센터 알림 읽기(notify.gd)
 var timers: Array = []                 # {id, at(유닉스 초), message, action, target}
 var next_id := 1
@@ -116,7 +117,7 @@ func tools() -> Array:
 func run(tool: String, input: Dictionary) -> Dictionary:
 	if tool.ends_with("_mail"):
 		return await mail.run(tool, input)
-	if tool == "list_events":
+	if calendar.has(tool):
 		return await calendar.run(tool, input)
 	if music.has(tool):
 		return await music.run(tool, input)

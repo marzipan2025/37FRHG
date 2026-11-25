@@ -1,5 +1,10 @@
 extends Node
-## 캘린더(Claude 도구, actions.gd 가 run() 에서 넘겨줌, 2026-11-24). 지금은 일정 읽기만.
+## 캘린더(Claude 도구, actions.gd 가 run() 에서 넘겨줌, 2026-11-24 읽기, 2026-11-25 만들기·바꾸기·지우기).
+## 일정 목록에는 짧은 번호(e1, e2 …)를 붙여 Claude 가 그 번호로 바꾸기·지우기를 하게 한다(refs: 번호 → 일정 id·회차 시작).
+## 바꾸기·지우기는 두 단계: 처음 부르면 무엇이 바뀌는지 보여 주고(pending) 사용자에게 묻게 하고, 사용자가 다음 말에서
+## 예라고 해서 같은 내용으로 confirm true 로 다시 부를 때만 실행한다. 같은 대답 안에서는(사용자 말이 오가지 않았으면)
+## confirm 을 받아 주지 않는다(actions.turn 으로 셈). 만들기는 바로 하고 결과를 말한다(지우면 되돌릴 수 있어서).
+## 반복 일정은 기본 그 회차만(span this), 사용자가 앞으로 모두라고 하면 future. 읽기 전용(구독·공유) 캘린더는 못 바꾼다.
 ## 맥 캘린더 앱의 AppleScript 는 느리고(Mail 처럼) 데이터베이스를 직접 고치는 것은 위험해서
 ## EventKit 을 쓰는 Swift 도우미(native/cal.swift → Contents/MacOS/frhgcal)를 부른다.
 ## 도우미는 앱의 자식이라 캘린더 권한 창이 "37FRHG" 이름으로 뜨고 권한도 앱에 붙는다
@@ -17,13 +22,36 @@ const TOOLS := [
 		"description": "맥 캘린더(캘린더 앱에 연결된 모든 계정)의 하루 일정을 시간 순으로 보여 준다(종일 일정 먼저, 시작~끝, 제목, 장소, 캘린더 이름, 반복 여부, 메모 앞부분). date 를 비우면 오늘. 사용자가 오늘·내일·특정 날의 일정을 물을 때 쓴다.",
 		"input_schema": {"type": "object", "properties": {
 			"date": {"type": "string", "description": "YYYY-MM-DD(지역 날짜). 비우면 오늘."}}}},
+	{"name": "add_event",
+		"description": "캘린더에 새 일정을 만든다(바로 만들어짐). 시각은 지역 시각 'YYYY-MM-DD HH:MM'. end 를 비우면 1시간. 종일이면 all_day true 에 start 는 'YYYY-MM-DD'. calendar 를 비우면 기본 캘린더. 날짜·시각이 애매하면 만들지 말고 먼저 물어본다.",
+		"input_schema": {"type": "object", "properties": {
+			"title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
+			"all_day": {"type": "boolean"}, "location": {"type": "string"}, "notes": {"type": "string"},
+			"calendar": {"type": "string", "description": "캘린더 이름(사용자가 말했을 때만)."}}, "required": ["title", "start"]}},
+	{"name": "update_event",
+		"description": "list_events 가 붙인 번호(ref, 예 e3)의 일정을 바꾼다(제목·시작·끝·종일·장소·메모 중 바꿀 것만). 처음에는 confirm 없이 불러 무엇이 바뀌는지 받고, 사용자에게 그대로 할지 묻는다. 사용자가 다음 말에서 예라고 하면 같은 내용에 confirm true 로 다시 부른다. 반복 일정은 span this(이 회차만, 기본) 또는 future(이 회차부터 앞으로 모두).",
+		"input_schema": {"type": "object", "properties": {
+			"ref": {"type": "string"}, "title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
+			"all_day": {"type": "boolean"}, "location": {"type": "string"}, "notes": {"type": "string"},
+			"span": {"type": "string", "enum": ["this", "future"]}, "confirm": {"type": "boolean"}}, "required": ["ref"]}},
+	{"name": "delete_event",
+		"description": "list_events 가 붙인 번호(ref)의 일정을 지운다. update_event 처럼 먼저 confirm 없이 불러 확인 문구를 받고, 사용자가 예라고 한 뒤에만 confirm true 로 다시 부른다. 반복 일정은 span this(이 회차만, 기본) 또는 future.",
+		"input_schema": {"type": "object", "properties": {
+			"ref": {"type": "string"}, "span": {"type": "string", "enum": ["this", "future"]}, "confirm": {"type": "boolean"}}, "required": ["ref"]}},
 ]
+
+var refs := {}        # "e3" → {"id", "at"(회차 시작), "title", "recurring", "readonly", "label"}
+var next_ref := 1
+var pending := {}     # 확인을 기다리는 바꾸기·지우기 {"kind", "ref", "sig", "turn"}
 
 const WD := ["일", "월", "화", "수", "목", "금", "토"]
 
 
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
+	if "--cal-test" in args:
+		_self_test()
+		return
 	var t := args.find("--cal-tool")
 	if t < 0 or t + 1 >= args.size():
 		return
@@ -36,10 +64,18 @@ func _ready() -> void:
 	get_tree().quit()
 
 
+func has(tool: String) -> bool:
+	return tool in ["list_events", "add_event", "update_event", "delete_event"]
+
+
 func run(tool: String, input: Dictionary) -> Dictionary:
 	match tool:
 		"list_events":
 			return await _day(String(input.get("date", "")).strip_edges())
+		"add_event":
+			return await _add(input)
+		"update_event", "delete_event":
+			return await _change(tool, input)
 	return {"text": "모르는 도구: " + tool, "error": true}
 
 
@@ -85,6 +121,10 @@ func _day(date: String) -> Dictionary:
 		return {"text": "%s 일정이 없어요." % label, "error": false}
 	var lines := PackedStringArray()
 	for e in evs:
+		var ref := "e%d" % next_ref
+		next_ref += 1
+		refs[ref] = {"id": String(e.id), "at": String(e.start), "title": String(e.title), "recurring": bool(e.recurring),
+			"readonly": bool(e.get("readonly", false)), "label": "%s %s" % [String(e.start), String(e.title)]}
 		var when := "종일"
 		if not e.all_day:
 			var s := String(e.start)
@@ -99,5 +139,135 @@ func _day(date: String) -> Dictionary:
 			parts.append("반복")
 		if e.has("notes"):
 			parts.append("메모: " + String(e.notes).replace("\n", " ").left(150))
-		lines.append("- " + " | ".join(parts))
-	return {"text": DATA_NOTE + "%s 일정 %d개:\n%s" % [label, evs.size(), "\n".join(lines)], "error": false}
+		if e.get("readonly", false):
+			parts.append("읽기 전용(못 바꿈)")
+		lines.append("- [%s] " % ref + " | ".join(parts))
+	return {"text": DATA_NOTE + "%s 일정 %d개([번호]는 바꾸기·지우기에 쓴다, 사용자에게 말하지 않는다):\n%s" % [label, evs.size(), "\n".join(lines)], "error": false}
+
+
+func _turn() -> int:
+	var p := get_parent()
+	return int(p.get("turn")) if p and p.get("turn") != null else 0
+
+
+func _helper_json(cmd: String, obj: Dictionary) -> Dictionary:
+	var r: Array = await _helper(PackedStringArray([cmd, JSON.stringify(obj)]))
+	if int(r[0]) == 2:
+		return {"err": "denied"}
+	var d = JSON.parse_string(String(r[1]).strip_edges())
+	if not (d is Dictionary):
+		print("calendar 도우미 실패 ", r[0], " ", String(r[1]).left(200))
+		return {"err": "fail"}
+	if d.has("error"):
+		print("calendar 도우미 ", cmd, " 오류 ", d.error)
+		return {"err": String(d.error)}
+	return d
+
+
+func _err_text(err: String) -> String:
+	match err:
+		"denied":
+			return NO_ACCESS
+		"not found":
+			return "그 일정을 찾지 못했어요(옮겨졌거나 지워졌을 수 있어요). 일정을 다시 확인해 주세요."
+		"readonly":
+			return "그 일정은 읽기 전용 캘린더(구독·공유)라 바꿀 수 없어요."
+		"end before start":
+			return "끝나는 시각이 시작보다 빨라요."
+	return "캘린더에 쓰지 못했어요(%s)." % err
+
+
+func _add(input: Dictionary) -> Dictionary:
+	var obj := {}
+	for k in ["title", "start", "end", "all_day", "location", "notes", "calendar"]:
+		if input.has(k) and input[k] != null and str(input[k]) != "":
+			obj[k] = input[k]
+	var d := await _helper_json("add", obj)
+	if d.has("err"):
+		if d.err == "no calendar":
+			var c := await _helper_json("calendars", {})
+			return {"text": "'%s' 캘린더가 없어요. 넣을 수 있는 캘린더: %s" % [str(obj.get("calendar", "")), ", ".join(c.get("calendars", []))], "error": true}
+		return {"text": _err_text(String(d.err)), "error": true}
+	var e: Dictionary = d.event
+	var ref := "e%d" % next_ref
+	next_ref += 1
+	refs[ref] = {"id": String(e.id), "at": String(e.start), "title": String(e.title), "recurring": false, "readonly": false,
+		"label": "%s %s" % [String(e.start), String(e.title)]}
+	return {"text": "일정을 만들었어요 [%s]: %s %s~%s (%s 캘린더)." % [ref, String(e.title), String(e.start), String(e.end).substr(11), String(e.calendar)], "error": false}
+
+
+# 바꾸기·지우기. 처음엔 보여 주기만, 다음 사용자 말 뒤 같은 내용 + confirm 이면 실행.
+func _change(tool: String, input: Dictionary) -> Dictionary:
+	var ref := String(input.get("ref", "")).strip_edges()
+	if not refs.has(ref):
+		return {"text": "그 번호(%s)의 일정을 모르겠어요. 먼저 list_events 로 그날 일정을 읽고 번호를 쓴다." % ref, "error": true}
+	var info: Dictionary = refs[ref]
+	if info.readonly:
+		return {"text": _err_text("readonly"), "error": true}
+	var kind := "update" if tool == "update_event" else "delete"
+	var obj := {"id": info.id, "at": info.at, "span": "future" if String(input.get("span", "")) == "future" else "this"}
+	var changes := PackedStringArray()
+	if kind == "update":
+		for k in ["title", "start", "end", "all_day", "location", "notes"]:
+			if input.has(k) and input[k] != null:
+				obj[k] = input[k]
+				changes.append("%s → %s" % [{"title": "제목", "start": "시작", "end": "끝", "all_day": "종일", "location": "장소", "notes": "메모"}[k], str(input[k])])
+		if changes.is_empty():
+			return {"text": "무엇을 바꿀지 없어요.", "error": true}
+	var sig := kind + JSON.stringify(obj, "", true)
+	var span_txt := ""
+	if info.recurring:
+		span_txt = " 반복 일정이라 %s." % ("이 회차부터 앞으로 모두" if obj.span == "future" else "이 회차만")
+	var what := "바꾸기: %s — %s." % [info.label, ", ".join(changes)] if kind == "update" else "지우기: %s." % info.label
+	if not bool(input.get("confirm", false)) or pending.is_empty() or pending.sig != sig or int(pending.turn) >= _turn():
+		pending = {"sig": sig, "turn": _turn()}
+		return {"text": "아직 하지 않았다. 확인이 필요하다 — %s%s 사용자에게 이대로 할지 묻고, 사용자가 다음 말에서 예라고 하면 같은 내용에 confirm true 로 다시 부른다." % [what, span_txt], "error": false}
+	pending = {}
+	var d := await _helper_json(kind, obj)
+	if d.has("err"):
+		return {"text": _err_text(String(d.err)), "error": true}
+	var e: Dictionary = d.event
+	if kind == "delete":
+		refs.erase(ref)
+		return {"text": "일정을 지웠어요: %s %s%s" % [String(e.start), String(e.title), span_txt], "error": false}
+	info.at = String(e.start)
+	info.title = String(e.title)
+	info.label = "%s %s" % [String(e.start), String(e.title)]
+	return {"text": "일정을 바꿨어요 [%s]: %s %s~%s.%s" % [ref, String(e.title), String(e.start), String(e.end).substr(11), span_txt], "error": false}
+
+
+# 확인용(설치한 앱으로: open -n -a /Applications/37FRHG.app --args -- --cal-test): 내일 23:00 에 시험 일정을 만들고
+# 읽고 → 바꾸기(확인 전·같은 말 안 confirm·다음 말 confirm) → 지우기(확인 → 다음 말 confirm) → 다시 읽기.
+# 결과는 user://cal_test.txt. 만든 일정은 마지막에 지운다.
+func _self_test() -> void:
+	var lines := PackedStringArray()
+	var p := get_parent()
+	var day := Time.get_date_string_from_unix_time(int(Time.get_unix_time_from_system()) + 86400)
+	var r := await run("add_event", {"title": "37FRHG 시험 일정", "start": day + " 23:00", "end": day + " 23:30"})
+	lines.append("add: " + r.text)
+	r = await run("list_events", {"date": day})
+	lines.append("list: " + r.text)
+	var ref := ""
+	for k in refs:
+		if refs[k].title == "37FRHG 시험 일정":
+			ref = k
+	var up := {"ref": ref, "start": day + " 22:00", "end": day + " 22:30"}
+	r = await run("update_event", up)
+	lines.append("update 1(확인 전): " + r.text)
+	up["confirm"] = true
+	r = await run("update_event", up)
+	lines.append("update 2(같은 말 안 confirm → 거절돼야): " + r.text)
+	p.turn += 1
+	r = await run("update_event", up)
+	lines.append("update 3(다음 말 confirm): " + r.text)
+	r = await run("delete_event", {"ref": ref})
+	lines.append("delete 1: " + r.text)
+	p.turn += 1
+	r = await run("delete_event", {"ref": ref, "confirm": true})
+	lines.append("delete 2: " + r.text)
+	r = await run("list_events", {"date": day})
+	lines.append("list after: " + r.text)
+	var f := FileAccess.open("user://cal_test.txt", FileAccess.WRITE)
+	f.store_string("\n\n".join(lines))
+	f.close()
+	get_tree().quit()
