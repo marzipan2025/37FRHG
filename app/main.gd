@@ -269,7 +269,7 @@ func _ready() -> void:
 	if "--input" in args:
 		get_tree().create_timer(1.0).timeout.connect(func():
 			talk_input.show_input(_feet(), _head_top(), _usable(), OS.get_environment("INPUT_KEY") == "1")
-			talk_input.edit.insert_text_at_caret(OS.get_environment("INPUT_TEXT")))
+			talk_input.insert_text(OS.get_environment("INPUT_TEXT")))
 		var idump := OS.get_environment("INPUT_DUMP")
 		if idump != "":
 			get_tree().create_timer(2.0).timeout.connect(func(): talk_input.dump(idump))
@@ -456,6 +456,10 @@ func _reset_position() -> void:
 	var r := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
 	win_pos = Vector2(r.position.x + r.size.x * 0.5 - WIN_W * px_scale * 0.5,
 		r.end.y - FEET_Y * px_scale - 8.0 * px_scale)
+	# 확인용: FROG_X=0~1 이면 발 가운데를 화면 폭의 그 비율 자리에(0 왼쪽 끝, 1 오른쪽 끝, 창이 화면 밖으로 나가도 됨).
+	var fx := OS.get_environment("FROG_X")
+	if fx != "":
+		win_pos.x = r.position.x + r.size.x * float(fx) - WIN_W * px_scale * 0.5
 	_place()
 
 

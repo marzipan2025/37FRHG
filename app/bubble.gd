@@ -20,6 +20,17 @@ const TEXT_R := 832.0 - SIDE_PAD * IMG_W / 260.0
 const TEXT_TOP := 100.0
 const TEXT_BOTTOM := 421.0
 const TIP := Vector2(468.0, 572.0)   # 꼬리 끝
+# 꼭지 옮기기(2026-11-25 사용자 요청): 화면 끝에서 창이 화면 안으로 밀리면 꼭지가 머리에서 어긋났다. 아래 조각(y CUT_BOTTOM~)을
+# 꼭지 조각(x TAIL_L~TAIL_R, y TAIL_Y~)을 떼어 정수리 위로 옮기고, 원래 자리는 양옆의 평평한 열로 채운다.
+# 겹쳐 그리면 반투명 그림자 밑으로 원래 꼭지가 비치고 그림자가 두 겹이 되어서, 아래 조각을 이미지로 새로 합친다(_make_bottom).
+# 모서리 조각(라운딩·점 장식)은 그대로라 꼭지가 그 안으로는 못 간다(거기서 멈춤). 잰 값: 몸통 아래 끝은 x 120~816 에서 평평(y 485),
+# 꼭지 몸통은 x 388~534, 그림자까지 넉넉히.
+const CORNER_L := 150.0
+const CORNER_R := 786.0
+const TAIL_L := 358.0          # 꼭지 조각(그림자까지). 가운데 468 에서 ±110
+const TAIL_R := 578.0
+const TAIL_MIN_BAND := 0.0     # 꼭지 조각과 모서리 조각 사이에 남길 띠(그림 픽셀). 모서리 조각이 라운딩 끝(120)보다 30 넓어 0
+const TAIL_Y := 448.0          # 꼭지 조각의 위 끝(금선이 V 로 꺾이기 시작하는 460 보다 조금 위)
 const GOLD_AT := Vector2i(200, 472)  # 아래 금선 한가운데. 글자 색을 여기서 읽는다
 
 const WIDTH := 260.0           # 화면 폭(pt, 그림자 포함). 글 폭은 약 194pt
@@ -39,6 +50,9 @@ var win: Window
 var art: Control
 var label: Label
 var tex: Texture2D
+var src: Image                 # 원본 그림(아래 조각을 다시 합칠 때 씀)
+var bottom_tex: Texture2D      # 꼭지를 옮긴 아래 조각
+var bottom_dx := 0             # bottom_tex 를 만든 tail_dx
 var font: Font
 var gold := Color(0.85, 0.67, 0.45)
 var s := WIDTH / IMG_W         # 그림 픽셀 → pt
@@ -48,6 +62,8 @@ var left := 0.0                # 남은 표시 시간(초). 0 이하면 숨김
 var alpha := 0.0
 var shown := ""
 var line_gap := 0.0            # Label 의 line_spacing(pt). 글꼴 높이로 정한다
+var last_head := Vector2.ZERO  # 확인용(dump)
+var tail_dx := 0.0             # 꼭지를 가운데에서 옮긴 거리(그림 픽셀, +면 오른쪽)
 
 
 func setup(scale: float) -> void:
@@ -59,8 +75,10 @@ func setup(scale: float) -> void:
 	gold = img.get_pixelv(GOLD_AT)
 	# 글자는 금선보다 명도·채도를 10%p 씩 올려 또렷하게(2026-11-23 사용자 요청)
 	gold = Color.from_hsv(gold.h, minf(gold.s + TEXT_SAT_UP, 1.0), minf(gold.v + TEXT_VAL_UP, 1.0))
+	src = img.duplicate()
 	img.generate_mipmaps()
 	tex = ImageTexture.create_from_image(img)
+	_make_bottom(0)
 	font = _load_font()
 	# 카카오 빅 산스는 띄어쓰기가 아주 좁아 어절이 붙어 보인다 → 공백을 글자 크기의 SPACE_EM 폭까지 넓힌다.
 	var sp := font.get_string_size(" ", HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE).x
@@ -203,14 +221,40 @@ func _draw_art() -> void:
 		var src_y := (CUT_TOP + CUT_BOTTOM - src_h) * 0.5
 		art.draw_texture_rect_region(tex, Rect2(0, CUT_TOP * s, WIDTH, mid_h),
 			Rect2(0, src_y, IMG_W, src_h))
-	art.draw_texture_rect_region(tex, Rect2(0, CUT_TOP * s + mid_h, WIDTH, (IMG_H - CUT_BOTTOM) * s),
-		Rect2(0, CUT_BOTTOM, IMG_W, IMG_H - CUT_BOTTOM))
+	# 아래 조각(꼭지를 옮겨 합친 것)
+	art.draw_texture_rect(bottom_tex, Rect2(0, CUT_TOP * s + mid_h, WIDTH, (IMG_H - CUT_BOTTOM) * s), false)
+
+
+# 아래 조각(y CUT_BOTTOM~)을 꼭지를 dx(그림 픽셀)만큼 옮겨 새로 합친다. 덮어쓰기(blit)라 그림자가 겹치지 않는다.
+func _make_bottom(dx: int) -> void:
+	var h := int(IMG_H - CUT_BOTTOM)
+	var b := Image.create(int(IMG_W), h, false, Image.FORMAT_RGBA8)
+	b.blit_rect(src, Rect2i(0, int(CUT_BOTTOM), int(IMG_W), h), Vector2i.ZERO)
+	if dx != 0:
+		var y0 := int(TAIL_Y)
+		var hh := int(IMG_H - TAIL_Y)
+		var half := int((TAIL_R - TAIL_L) * 0.5)
+		var l := int(TAIL_L)
+		var dy := y0 - int(CUT_BOTTOM)
+		# 원래 꼭지 자리: 왼쪽 반은 바로 왼쪽 열, 오른쪽 반은 바로 오른쪽 열로 채운다.
+		b.blit_rect(src, Rect2i(l - half, y0, half, hh), Vector2i(l, dy))
+		b.blit_rect(src, Rect2i(int(TAIL_R), y0, half, hh), Vector2i(l + half, dy))
+		b.blit_rect(src, Rect2i(l, y0, half * 2, hh), Vector2i(l + dx, dy))
+	b.generate_mipmaps()
+	bottom_tex = ImageTexture.create_from_image(b)
+	bottom_dx = dx
+
+
+# 꼭지가 갈 수 있는 범위(그림 픽셀, 가운데 기준).
+func _tail_range() -> Vector2:
+	return Vector2(CORNER_L + TAIL_MIN_BAND - TAIL_L, CORNER_R - TAIL_MIN_BAND - TAIL_R)
 
 
 # head: 머리끝 가운데(화면 픽셀). usable: 화면에서 쓸 수 있는 곳(픽셀).
 func follow(head: Vector2, usable: Rect2, dt: float) -> void:
 	if win == null or not win.visible:
 		return
+	last_head = head
 	left -= dt
 	alpha = move_toward(alpha, 1.0 if left > 0.0 else 0.0, dt / FADE)
 	if alpha <= 0.0 and left <= 0.0:
@@ -219,16 +263,25 @@ func follow(head: Vector2, usable: Rect2, dt: float) -> void:
 		return
 	art.modulate.a = alpha
 	label.modulate.a = alpha
-	var tip := Vector2(TIP.x * s, size_pt.y - (IMG_H - TIP.y) * s) * screen_scale
+	var k := s * screen_scale     # 그림 픽셀 → 화면 픽셀
+	var tip := Vector2(TIP.x * k, (size_pt.y - (IMG_H - TIP.y) * s) * screen_scale)
 	var pos := head - Vector2(0, GAP * screen_scale) - tip
 	var wpx := Vector2(win.size)
 	pos.x = clampf(pos.x, usable.position.x, usable.end.x - wpx.x)
 	pos.y = clampf(pos.y, usable.position.y, usable.end.y - wpx.y)
 	win.position = Vector2i(roundi(pos.x), roundi(pos.y))
+	# 창이 화면 안으로 밀린 만큼 꼭지를 머리 쪽으로 옮긴다(모서리 앞에서 멈춤).
+	var r := _tail_range()
+	var want := clampf((head.x - (win.position.x + tip.x)) / k, r.x, r.y)
+	tail_dx = want
+	if roundi(want) != bottom_dx:
+		_make_bottom(roundi(want))
+		art.queue_redraw()
 
 
 # 확인용: 지금 말풍선 창 그림을 PNG 로 남긴다.
 func dump(path: String) -> void:
 	if win and win.visible:
 		win.get_texture().get_image().save_png(path)
-		print("bubble at ", win.position, " size ", win.size)
+		print("bubble at ", win.position, " size ", win.size, " tail_dx ", snappedf(tail_dx, 0.1),
+			" tip_x ", snappedf(win.position.x + (TIP.x + bottom_dx) * s * screen_scale, 0.1), " head_x ", snappedf(last_head.x, 0.1))
