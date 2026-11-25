@@ -31,6 +31,11 @@ const YB := 115                # 이 행부터 아래(잉크병·깃펜 아래�
 const MIRROR := 936            # 좌우 대칭 축: 몸통이 x 49~887 → x ↔ 936 - x
 const MAX_LINES := 4
 const MEMO_NUDGE := 0.0        # 글칸 세로 보정(pt). 그림으로 재서 맞춘다
+# 사진 붙여넣기(2026-11-25 사용자 요청): ⌘V 때 클립보드에 그림이 있으면 받아 두고(긴 변 IMG_MAX 로 줄임)
+# 글칸 오른쪽 끝에 작은 그림(THUMB)을 보인다. 보낼 때 main.gd 가 take_image() 로 가져가 talk.gd 에 넘긴다.
+# 글 없이 그림만 보내도 된다. 글이 빈 채 지우기(⌫)를 누르면 그림을 뺀다.
+const IMG_MAX := 1024
+const THUMB := Vector2(30.0, 22.0)   # pt
 
 const WIDTH := 208.0           # 화면 폭(pt, 그림자 포함). 처음 260 의 80%(2026-11-23)
 const FONT_SIZE := 10            # 처음 13 의 80%
@@ -54,6 +59,8 @@ var feather: Image             # 떼어 낸 깃펜(위 YB 행, 나머지 투명)
 var grow := 0                  # 지금 늘인 높이(그림 픽셀)
 var lines := 1
 var line_h := 0.0              # 글 한 줄 높이(pt)
+var pending_img: Image = null  # 붙여 넣은 그림(보내기 전)
+var thumb: TextureRect
 var s := WIDTH / IMG_W
 var size_pt := Vector2.ZERO
 var screen_scale := 1.0
@@ -149,6 +156,13 @@ func setup(scale: float, font: Font) -> void:
 	memo.gui_input.connect(_on_memo_key)
 	win.add_child(memo)
 	line_h = memo.get_line_height()
+	thumb = TextureRect.new()
+	thumb.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	thumb.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	thumb.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	thumb.visible = false
+	win.add_child(thumb)
 	_layout()
 
 
@@ -174,6 +188,7 @@ func show_input(feet: Vector2, head: Vector2, usable: Rect2, for_key := false) -
 	edit.visible = for_key
 	memo.visible = not for_key
 	memo.text = ""
+	set_image(null)
 	_set_lines(1)
 	idle = 0.0
 	open = true
@@ -219,7 +234,7 @@ func _on_key(e: InputEvent) -> void:
 
 # 다른 데를 눌러 포커스를 잃으면, 아무것도 안 쳤을 때만 닫는다(치던 글은 남김).
 func _on_focus_out() -> void:
-	if open and not key_mode and memo.text == "" and not memo.has_ime_text():
+	if open and not key_mode and memo.text == "" and pending_img == null and not memo.has_ime_text():
 		close()
 
 
@@ -227,7 +242,7 @@ func _on_focus_out() -> void:
 func follow(feet: Vector2, head: Vector2, usable: Rect2, dt: float) -> void:
 	if win == null or not win.visible:
 		return
-	if open and not key_mode and memo.text == "" and not memo.has_ime_text():
+	if open and not key_mode and memo.text == "" and pending_img == null and not memo.has_ime_text():
 		idle += dt
 		if idle >= IDLE_CLOSE:
 			close()
@@ -238,6 +253,7 @@ func follow(feet: Vector2, head: Vector2, usable: Rect2, dt: float) -> void:
 	art.modulate.a = alpha
 	edit.modulate.a = alpha
 	memo.modulate.a = alpha
+	thumb.modulate.a = alpha
 	var wpx := Vector2(win.size)
 	var k := s * screen_scale
 	var bottom := BODY_BOTTOM + grow   # 늘어난 몸통 아래 끝
@@ -268,7 +284,18 @@ func _on_memo_key(e: InputEvent) -> void:
 	if e.keycode == KEY_ESCAPE:
 		memo.accept_event()
 		memo.text = ""
+		set_image(null)
 		close()
+	elif (e.keycode == KEY_V or e.physical_keycode == KEY_V) and (e.meta_pressed or e.ctrl_pressed) and DisplayServer.clipboard_has_image():
+		# 그림 붙여넣기(글은 TextEdit 가 원래대로 붙인다). 한글 입력 중에도 V 키 자리로 본다.
+		memo.accept_event()
+		var img := DisplayServer.clipboard_get_image()
+		if img != null and not img.is_empty():
+			set_image(img)
+			idle = 0.0
+	elif e.keycode == KEY_BACKSPACE and memo.text == "" and pending_img != null:
+		memo.accept_event()
+		set_image(null)
 	elif (e.keycode == KEY_ENTER or e.keycode == KEY_KP_ENTER) and e.shift_pressed:
 		memo.accept_event()   # 줄바꿈 글자는 받지 않는다(한 문단으로 보냄)
 	elif (e.keycode == KEY_ENTER or e.keycode == KEY_KP_ENTER) and not memo.has_ime_text():
@@ -276,8 +303,33 @@ func _on_memo_key(e: InputEvent) -> void:
 		var t := memo.text.replace("\n", " ").strip_edges()
 		memo.text = ""
 		close()
-		if t != "":
+		if t != "" or pending_img != null:
 			submitted.emit(t, false)
+
+
+# 붙여 넣은 그림을 정한다(null 이면 뺌). 긴 변을 IMG_MAX 로 줄여 둔다.
+func set_image(img: Image) -> void:
+	if img != null:
+		img = img.duplicate()
+		img.convert(Image.FORMAT_RGBA8)
+		var k := float(IMG_MAX) / maxf(img.get_width(), img.get_height())
+		if k < 1.0:
+			img.resize(maxi(1, roundi(img.get_width() * k)), maxi(1, roundi(img.get_height() * k)), Image.INTERPOLATE_LANCZOS)
+		var t := img.duplicate()
+		t.generate_mipmaps()
+		thumb.texture = ImageTexture.create_from_image(t)
+	pending_img = img
+	if thumb:
+		thumb.visible = img != null
+	if memo:
+		_layout()
+
+
+# 보낼 그림을 가져간다(가져가면 비움).
+func take_image() -> Image:
+	var img := pending_img
+	set_image(null)
+	return img
 
 
 # 확인용(main.gd INPUT_TEXT): 지금 글칸에 글을 넣는다.
@@ -306,7 +358,13 @@ func _layout() -> void:
 	win.size = Vector2i(ceili(size_pt.x * screen_scale), ceili(size_pt.y * screen_scale))
 	var top := TEXT_CY * s - line_h * 0.5 + MEMO_NUDGE
 	memo.position = Vector2(TEXT_L * s, top)
-	memo.size = Vector2((TEXT_R - TEXT_L) * s, line_h * lines + 1.0)
+	var w := (TEXT_R - TEXT_L) * s
+	if pending_img != null:
+		# 그림은 글칸 오른쪽 끝, 첫 줄 높이 가운데. 그만큼 글 폭을 줄인다.
+		w -= THUMB.x + 4.0
+		thumb.position = Vector2(TEXT_R * s - THUMB.x, TEXT_CY * s - THUMB.y * 0.5)
+		thumb.size = THUMB
+	memo.size = Vector2(w, line_h * lines + 1.0)
 
 
 # 깨끗한 테두리(clean)와 떼어 낸 깃펜(feather)을 만든다(처음 한 번).

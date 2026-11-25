@@ -274,7 +274,9 @@ func _ready() -> void:
 	if "--input" in args:
 		get_tree().create_timer(1.0).timeout.connect(func():
 			talk_input.show_input(_feet(), _head_top(), _usable(), OS.get_environment("INPUT_KEY") == "1")
-			talk_input.insert_text(OS.get_environment("INPUT_TEXT")))
+			talk_input.insert_text(OS.get_environment("INPUT_TEXT"))
+			if OS.get_environment("INPUT_IMAGE") != "":
+				talk_input.set_image(Image.load_from_file(OS.get_environment("INPUT_IMAGE"))))
 		var idump := OS.get_environment("INPUT_DUMP")
 		if idump != "":
 			get_tree().create_timer(2.0).timeout.connect(func(): talk_input.dump(idump))
@@ -608,7 +610,10 @@ func _on_talk(text: String, key_mode: bool) -> void:
 	if talk.is_busy():
 		return
 	bubble.say("…", 40.0)
-	talk.reply(text)
+	# 확인용: ASK_IMAGE=그림 경로면 -- --ask 에 그 그림을 붙여 보낸다.
+	if OS.get_environment("ASK_IMAGE") != "":
+		talk_input.set_image(Image.load_from_file(OS.get_environment("ASK_IMAGE")))
+	talk.reply(text, talk_input.take_image())
 
 
 # 글자를 따라 입 여닫기 순서를 만든다([시작, 끝, 여는 정도], clock 기준). _chat_step 이 재생한다.
