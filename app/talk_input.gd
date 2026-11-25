@@ -17,7 +17,7 @@ const IMG_W := 936.0
 const IMG_H := 295.0
 # 글 자리(그림 픽셀). 연보라 네모는 x 104~832·y 66~186, 왼쪽 아래 물약 병(~x 120)·오른쪽 잉크병(~x 810)을 피한다.
 const TEXT_L := 132.0
-const TEXT_R := 800.0
+const TEXT_R := 804.0           # 네모(104~832) 가운데 468 에서 TEXT_L 과 대칭(처음 800, 오른쪽이 넓어 2026-11-25 고침)
 const TEXT_CY := 126.0         # 네모 세로 가운데
 # LineEdit 는 글꼴 높이(아래 여백 큰 카카오 빅 산스)를 가운데에 두므로 한글 글자가 아래로 처진다 → 이만큼(글자 크기 대비) 올린다.
 const TEXT_NUDGE := -0.375
@@ -29,7 +29,10 @@ const BAND_BOT := 100.0
 const XR := 820                # 이 x 부터 오른쪽 끝은 깃펜 자리라 왼쪽 끝을 뒤집어 깨끗한 테두리로(위 YB 행까지)
 const YB := 115                # 이 행부터 아래(잉크병·깃펜 아래쪽)는 원래 그림 그대로
 const MIRROR := 936            # 좌우 대칭 축: 몸통이 x 49~887 → x ↔ 936 - x
-const MAX_LINES := 4
+const MAX_LINES := 3              # 처음 4, 3줄로 줄임(2026-11-25 사용자 요청)
+# Godot TextEdit 은 줄 끝에 10pt(wrap_right_offset, 바꿀 수 없음)를 남기고 줄을 바꾼다. 그만큼 글칸을 오른쪽으로 넓혀
+# 글이 실제로 TEXT_R 까지 차게 한다(안 하면 오른쪽 여백이 왼쪽보다 컸다, 2026-11-25).
+const WRAP_RIGHT_OFFSET := 10.0
 const MEMO_NUDGE := 0.0        # 글칸 세로 보정(pt). 그림으로 재서 맞춘다
 # 사진 붙여넣기(2026-11-25 사용자 요청): ⌘V 때 클립보드에 그림이 있으면 받아 두고(긴 변 IMG_MAX 로 줄임)
 # 글칸 오른쪽 끝에 작은 그림(THUMB)을 보인다. 보낼 때 main.gd 가 take_image() 로 가져가 talk.gd 에 넘긴다.
@@ -144,10 +147,10 @@ func setup(scale: float, font: Font) -> void:
 	memo.placeholder_text = HINT
 	memo.context_menu_enabled = false
 	memo.caret_blink = true
-	# 줄바꿈은 TextEdit 에 맡긴다(한글은 낱말 가운데서도 끊긴다. 띄어쓰기 단위로 직접 나누던 것은 2026-11-25 사용자 요청으로 뺌).
+	# 줄바꿈은 TextEdit 에 맡긴다. 띄어쓰기 단위로 직접 나누던 것은 2026-11-25 사용자 요청으로 뺐다.
 	memo.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	memo.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	# 스크롤 막대는 보이지 않게(4줄 넘으면 칸 안에서 밀리기만). 막대 폭만큼 글 자리가 줄지 않게 모양을 비운다.
+	memo.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY   # 띄어쓰기를 보지 않고 줄이 차면 아무 글자에서나 바꿈(2026-11-25 사용자 요청)
+	# 스크롤 막대는 보이지 않게(3줄 넘으면 칸 안에서 밀리기만). 막대 폭만큼 글 자리가 줄지 않게 모양을 비운다.
 	for sb in [memo.get_v_scroll_bar(), memo.get_h_scroll_bar()]:
 		for st in ["scroll", "scroll_focus", "grabber", "grabber_highlight", "grabber_pressed"]:
 			sb.add_theme_stylebox_override(st, StyleBoxEmpty.new())
@@ -273,7 +276,7 @@ func _on_memo_changed() -> void:
 		memo.set_caret_line(memo.get_line_count() - 1)
 		memo.set_caret_column(memo.get_line(memo.get_line_count() - 1).length())
 	_set_lines(memo.get_total_visible_line_count())
-	# 4줄을 넘으면 칸 크기가 정해진 뒤 커서 줄이 보이게 민다(안 하면 마지막 줄이 칸 밑에 숨었다).
+	# 3줄을 넘으면 칸 크기가 정해진 뒤 커서 줄이 보이게 민다(안 하면 마지막 줄이 칸 밑에 숨었다).
 	memo.call_deferred("adjust_viewport_to_caret")
 
 
@@ -364,7 +367,7 @@ func _layout() -> void:
 		w -= THUMB.x + 4.0
 		thumb.position = Vector2(TEXT_R * s - THUMB.x, TEXT_CY * s - THUMB.y * 0.5)
 		thumb.size = THUMB
-	memo.size = Vector2(w, line_h * lines + 1.0)
+	memo.size = Vector2(w + WRAP_RIGHT_OFFSET, line_h * lines + 1.0)
 
 
 # 깨끗한 테두리(clean)와 떼어 낸 깃펜(feather)을 만든다(처음 한 번).

@@ -57,7 +57,7 @@ const EFFORT := "low"                  # 짧은 대화라 생각은 조금만(�
 const MAX_TOKENS := 2000               # 생각하는 몫까지 포함한 상한. 말 길이는 프롬프트로 정한다
 const DAY_CALLS := 300                 # 하루 호출 상한
 const KEEP_TURNS := 12                 # 같이 보내는 최근 말 수(사용자·개구리 합쳐서)
-const MAX_CHARS := 60                  # 대답 길이(글자). SYSTEM_RULES 의 "60자" 와 같게. 말풍선은 6줄(약 90자)까지라 여유를 둠
+const MAX_CHARS := 60                  # 대답 길이(글자). SYSTEM_RULES 의 "60자" 와 같게. 말풍선은 8줄(약 120자)까지라 여유를 둠
 const STATE := "user://talk.json"
 const MAX_STEPS := 5                   # 한 번 말할 때 API 를 부르는 최대 횟수(도구 반복)
 
