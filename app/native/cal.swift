@@ -8,6 +8,12 @@
 //   frhgcal update '<JSON>'  {id, at "그 회차 시작", span "this"|"future", title?, start?, end?, all_day?, location?, notes?}
 //   frhgcal delete '<JSON>'  {id, at, span}
 //   (2026-11-25 추가: 만들기·바꾸기·지우기. 반복 일정은 span this = 그 회차만, future = 이 회차부터 앞으로 모두.)
+//   미리 알림(2026-11-25, 권한은 캘린더와 따로 NSRemindersFullAccessUsageDescription):
+//   frhgcal rem-lists                 미리 알림 목록 이름들과 기본 목록
+//   frhgcal rem-list '<JSON>'         {list?, done?} 안 끝난 것(done true 면 끝난 것도 최근 것까지)
+//   frhgcal rem-add '<JSON>'          {title, due? "YYYY-MM-DD HH:mm"|"YYYY-MM-DD", list?, notes?} 시각이 있으면 그때 알림
+//   frhgcal rem-done '<JSON>'         {id, done}
+//   frhgcal rem-delete '<JSON>'       {id}
 //
 // 종료 코드: 0 성공, 2 권한 없음, 1 그 밖의 오류. 오류도 {"error": "..."} 로 찍는다.
 import EventKit
@@ -20,6 +26,24 @@ func out(_ obj: Any, _ code: Int32 = 0) -> Never {
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write("\n".data(using: .utf8)!)
     exit(code)
+}
+
+func requestReminders() -> Bool {
+    switch EKEventStore.authorizationStatus(for: .reminder) {
+    case .fullAccess:
+        return true
+    case .notDetermined:
+        let sem = DispatchSemaphore(value: 0)
+        var ok = false
+        store.requestFullAccessToReminders { granted, _ in
+            ok = granted
+            sem.signal()
+        }
+        sem.wait()
+        return ok
+    default:
+        return false
+    }
 }
 
 func requestAccess() -> Bool {
@@ -42,7 +66,8 @@ func requestAccess() -> Bool {
 
 let args = CommandLine.arguments
 guard args.count >= 2 else { out(["error": "usage"], 1) }
-guard requestAccess() else { out(["error": "denied"], 2) }
+let isRem = args[1].hasPrefix("rem-")
+guard isRem ? requestReminders() : requestAccess() else { out(["error": "denied"], 2) }
 
 let local = DateFormatter()
 local.locale = Locale(identifier: "en_US_POSIX")
@@ -78,6 +103,92 @@ case "day":
         list.append(d)
     }
     out(["events": list])
+case "rem-lists":
+    let lists = store.calendars(for: .reminder).filter { $0.allowsContentModifications }.map { $0.title }
+    out(["lists": lists, "default": store.defaultCalendarForNewReminders()?.title ?? ""])
+case "rem-list", "rem-add", "rem-done", "rem-delete":
+    let raw = args.count >= 3 ? args[2] : "{}"
+    guard let data = raw.data(using: .utf8), let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { out(["error": "bad json"], 1) }
+    func s(_ k: String) -> String? { (j[k] as? String).map { $0.trimmingCharacters(in: .whitespaces) } }
+    func dueText(_ r: EKReminder) -> String {
+        guard let c = r.dueDateComponents else { return "" }
+        if c.hour == nil, let d = Calendar.current.date(from: c) { return dayFmt.string(from: d) }
+        if let d = Calendar.current.date(from: c) { return local.string(from: d) }
+        return ""
+    }
+    func rinfo(_ r: EKReminder) -> [String: Any] {
+        ["id": r.calendarItemIdentifier, "title": r.title ?? "", "due": dueText(r), "list": r.calendar?.title ?? "",
+         "done": r.isCompleted, "notes": String((r.notes ?? "").prefix(150))]
+    }
+    func list(named name: String?) -> EKCalendar? {
+        if let n = name, !n.isEmpty {
+            return store.calendars(for: .reminder).first(where: { $0.title == n && $0.allowsContentModifications })
+        }
+        return store.defaultCalendarForNewReminders()
+    }
+    func findRem() -> EKReminder {
+        guard let id = s("id"), let r = store.calendarItem(withIdentifier: id) as? EKReminder else { out(["error": "not found"], 1) }
+        return r
+    }
+    do {
+        switch args[1] {
+        case "rem-list":
+            var cals: [EKCalendar]? = nil
+            if let n = s("list"), !n.isEmpty {
+                guard let c = store.calendars(for: .reminder).first(where: { $0.title == n }) else { out(["error": "no list"], 1) }
+                cals = [c]
+            }
+            let pred = (j["done"] as? Bool) == true
+                ? store.predicateForReminders(in: cals)
+                : store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: cals)
+            let sem = DispatchSemaphore(value: 0)
+            var found: [EKReminder] = []
+            store.fetchReminders(matching: pred) { r in
+                found = r ?? []
+                sem.signal()
+            }
+            sem.wait()
+            // 마감 있는 것 먼저(이른 것부터), 그 뒤 마감 없는 것
+            let sorted = found.sorted {
+                let a = $0.dueDateComponents.flatMap { Calendar.current.date(from: $0) } ?? .distantFuture
+                let b = $1.dueDateComponents.flatMap { Calendar.current.date(from: $0) } ?? .distantFuture
+                return a < b
+            }
+            out(["reminders": sorted.prefix(80).map(rinfo), "total": found.count])
+        case "rem-add":
+            guard let t = s("title"), !t.isEmpty else { out(["error": "need title"], 1) }
+            guard let c = list(named: s("list")) else { out(["error": "no list"], 1) }
+            let r = EKReminder(eventStore: store)
+            r.title = t
+            r.calendar = c
+            if let n = s("notes"), !n.isEmpty { r.notes = n }
+            if let d = s("due"), !d.isEmpty {
+                if let dt = local.date(from: d) {
+                    r.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dt)
+                    r.addAlarm(EKAlarm(absoluteDate: dt))   // 그 시각에 알림
+                } else if let dd = dayFmt.date(from: d) {
+                    r.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day], from: dd)
+                } else {
+                    out(["error": "bad due"], 1)
+                }
+            }
+            try store.save(r, commit: true)
+            out(["ok": true, "reminder": rinfo(r)])
+        case "rem-done":
+            let r = findRem()
+            r.isCompleted = (j["done"] as? Bool) ?? true
+            try store.save(r, commit: true)
+            out(["ok": true, "reminder": rinfo(r)])
+        default:
+            let r = findRem()
+            let before = rinfo(r)
+            try store.remove(r, commit: true)
+            out(["ok": true, "reminder": before])
+        }
+    } catch {
+        out(["error": error.localizedDescription], 1)
+    }
 case "calendars":
     let cals = store.calendars(for: .event).filter { $0.allowsContentModifications }.map { $0.title }
     out(["calendars": cals, "default": store.defaultCalendarForNewEvents?.title ?? ""])

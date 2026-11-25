@@ -110,7 +110,7 @@ func _process(dt: float) -> void:
 
 # Claude 에 보내는 도구 정의 전부(여기 것 + 메일).
 func tools() -> Array:
-	return TOOLS + mail.TOOLS + calendar.TOOLS + notify.TOOLS + music.TOOLS
+	return TOOLS + mail.TOOLS + calendar.TOOLS + calendar.REM_TOOLS + notify.TOOLS + music.TOOLS
 
 
 # 도구 실행. {"text": 결과 글, "error": bool}
