@@ -183,7 +183,11 @@ const DEMO_LINE := "안녕하세요! 저는 맥 화면 위를 걸어 다니는 �
 var mouth_demo := false       # 확인용 -- --mouth: 위 문장을 되풀이해서 말하는 입
 var chat: Array = []          # [시작, 끝, 여는 정도] 목록(clock 기준). 여는 정도 0 은 다문 입
 var click_wait := -1.0  # 클릭 뒤 두 번째 클릭을 기다리는 남은 시간. 0 아래로 가면 한 번 클릭
-const DOUBLE_CLICK := 0.28               # bubble.gd: 머리 위 말풍선(say(글))
+# 두 번째 클릭을 기다리는 시간: 맥 설정(손쉬운 사용 > 포인터 제어 > 이중 클릭 속도, defaults 의 doubleClickThreshold)을 읽는다.
+# 처음엔 0.28초로 고정이라, 설정이 0.8초인 맥에서 천천히 두 번 누르면 한 번 클릭 둘(걷기 켜고 끄기)이 됐다(2026-11-25).
+const DOUBLE_CLICK_DEFAULT := 0.5
+var double_click := DOUBLE_CLICK_DEFAULT
+var swallow_release := false   # 누를 때 이미 두 번 클릭으로 처리했으면 그 뗌은 넘긴다
 
 var snapshot := false
 var demo := false
@@ -201,6 +205,7 @@ func _ready() -> void:
 		_take_snapshots()
 		return
 	_setup_window()
+	double_click = _system_double_click()
 	get_window().focus_exited.connect(func(): held.clear())
 	updater = load("res://updater.gd").new()
 	add_child(updater)
@@ -739,6 +744,15 @@ func _wander_step(dt: float) -> void:
 
 # ---------------------------------------------------------------- 입력과 이동
 
+# 맥의 이중 클릭 간격(초). 못 읽으면 기본값. 너무 짧거나 길면 0.2~0.8 로.
+func _system_double_click() -> float:
+	var r: Array = preload("res://mail.gd").run_cmd("/usr/bin/defaults", PackedStringArray(["read", "-g", "com.apple.mouse.doubleClickThreshold"]))
+	var v := String(r[1]).strip_edges()
+	if int(r[0]) == 0 and v.is_valid_float():
+		return clampf(float(v), 0.2, 0.8)
+	return DOUBLE_CLICK_DEFAULT
+
+
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey:
 		if event.pressed and get_window().has_focus() and not _typing():
@@ -756,15 +770,22 @@ func _input(event: InputEvent) -> void:
 		if event.keycode in [KEY_ENTER, KEY_KP_ENTER] and not _typing():
 			_open_input()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if not event.pressed and dragging:
+		# 맥이 두 번 클릭이라고 알려 주면(시스템 간격) 누르는 순간 바로 말 걸기.
+		if event.pressed and event.double_click and click_wait >= 0.0:
+			click_wait = -1.0
+			swallow_release = true
+			_open_input()
+		elif not event.pressed and swallow_release:
+			swallow_release = false
+		elif not event.pressed and dragging:
 			var moved := (Vector2(DisplayServer.mouse_get_position()) - drag_mouse).length()
 			if moved < CLICK_SLOP * screen_scale:
-				# 두 번 누르면 말 걸기, 한 번이면(DOUBLE_CLICK 초 기다린 뒤) 걷기 켜고 끄기.
+				# 두 번 누르면 말 걸기, 한 번이면(double_click 초 기다린 뒤) 걷기 켜고 끄기.
 				if click_wait >= 0.0:
 					click_wait = -1.0
 					_open_input()
 				else:
-					click_wait = DOUBLE_CLICK
+					click_wait = double_click
 		dragging = event.pressed
 		drag_mouse = Vector2(DisplayServer.mouse_get_position())
 		drag_win = win_pos

@@ -29,7 +29,7 @@ const TOOLS := [
 		"description": "지금 맥에서 열려 있는(Dock 에 떠 있는) 앱의 개수와 이름, 맨 앞에 있는(지금 쓰고 있는) 앱, 화면에 보이는 순서, 숨겨 둔 앱을 알아본다. '지금 뭐 쓰고 있어?', '맨 앞 앱이 뭐야?'에도 쓴다. 이 개구리 앱(37FRHG)은 뺀다.",
 		"input_schema": {"type": "object", "properties": {}}},
 	{"name": "open_url",
-		"description": "웹 주소(http/https)를 기본 브라우저로 연다.",
+		"description": "웹 주소(http/https)를 기본 브라우저로 연다. 검색으로 찾은 페이지나 검색 결과 페이지를 사용자에게 보여 줄 때 쓴다.",
 		"input_schema": {"type": "object", "properties": {
 			"url": {"type": "string"}}, "required": ["url"]}},
 	{"name": "set_timer",
@@ -53,6 +53,7 @@ const TOOLS := [
 var http: HTTPRequest
 var mail: Node                         # 메일 읽기(mail.gd)
 var calendar: Node                     # 캘린더 일정(calendar.gd)
+var music: Node                        # 음악 앱(music.gd)
 var notify: Node                       # 알림 센터 알림 읽기(notify.gd)
 var timers: Array = []                 # {id, at(유닉스 초), message, action, target}
 var next_id := 1
@@ -68,6 +69,8 @@ func _ready() -> void:
 	add_child(mail)
 	calendar = load("res://calendar.gd").new()
 	add_child(calendar)
+	music = load("res://music.gd").new()
+	add_child(music)
 	notify = load("res://notify.gd").new()
 	notify.mail = mail
 	add_child(notify)
@@ -106,7 +109,7 @@ func _process(dt: float) -> void:
 
 # Claude 에 보내는 도구 정의 전부(여기 것 + 메일).
 func tools() -> Array:
-	return TOOLS + mail.TOOLS + calendar.TOOLS + notify.TOOLS
+	return TOOLS + mail.TOOLS + calendar.TOOLS + notify.TOOLS + music.TOOLS
 
 
 # 도구 실행. {"text": 결과 글, "error": bool}
@@ -115,6 +118,8 @@ func run(tool: String, input: Dictionary) -> Dictionary:
 		return await mail.run(tool, input)
 	if tool == "list_events":
 		return await calendar.run(tool, input)
+	if music.has(tool):
+		return await music.run(tool, input)
 	if tool == "list_notifications":
 		return await notify.run(tool, input)
 	match tool:

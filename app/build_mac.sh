@@ -30,6 +30,12 @@ swiftc -O -target arm64-apple-macos14 native/cal.swift -o "$CALTMP/cal-arm64"
 swiftc -O -target x86_64-apple-macos14 native/cal.swift -o "$CALTMP/cal-x86_64"
 lipo -create "$CALTMP/cal-arm64" "$CALTMP/cal-x86_64" -output "$OUT/Contents/MacOS/frhgcal"
 rm -r "$CALTMP"
+# 화면 조작 도우미(손쉬운 사용 API, native/ax.swift: 음악 앱 곡 줄 누르기)를 Contents/MacOS/frhgax 로. 권한이 앱에 붙는다.
+AXTMP=$(mktemp -d)
+swiftc -O -target arm64-apple-macos14 native/ax.swift -o "$AXTMP/ax-arm64"
+swiftc -O -target x86_64-apple-macos14 native/ax.swift -o "$AXTMP/ax-x86_64"
+lipo -create "$AXTMP/ax-arm64" "$AXTMP/ax-x86_64" -output "$OUT/Contents/MacOS/frhgax"
+rm -r "$AXTMP"
 # Apple Development 인증서가 있으면 그걸로 서명한다(없으면 임시 서명).
 ID=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Apple Development" | awk '{print $2}')
 codesign --force --deep -s "${ID:--}" "$OUT"
