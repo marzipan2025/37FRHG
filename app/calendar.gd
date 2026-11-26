@@ -22,6 +22,12 @@ const TOOLS := [
 		"description": "맥 캘린더(캘린더 앱에 연결된 모든 계정)의 하루 일정을 시간 순으로 보여 준다(종일 일정 먼저, 시작~끝, 제목, 장소, 캘린더 이름, 반복 여부, 메모 앞부분). date 를 비우면 오늘. 사용자가 오늘·내일·특정 날의 일정을 물을 때 쓴다.",
 		"input_schema": {"type": "object", "properties": {
 			"date": {"type": "string", "description": "YYYY-MM-DD(지역 날짜). 비우면 오늘."}}}},
+	{"name": "search_events",
+		"description": "기간 안의 일정을 이름(제목·장소·메모에 든 말)으로 찾는다. 날짜를 모르는 일정('workshop 언제야?', '다음 치과 예약')이나 여러 날에 걸친 목록('이번 주 일정')에 쓴다. query 를 비우면 기간의 모든 일정. from·to 를 비우면 30일 전부터 1년 뒤까지. 못 찾으면 다른 말(한·영, 줄임말)이나 더 넓은 기간으로 다시 찾아본다. 결과에 붙는 번호로 바꾸기·지우기를 할 수 있다.",
+		"input_schema": {"type": "object", "properties": {
+			"query": {"type": "string", "description": "찾을 말(대소문자 무시). 한 낱말이 잘 찾힌다."},
+			"from": {"type": "string", "description": "YYYY-MM-DD(그날 포함)."},
+			"to": {"type": "string", "description": "YYYY-MM-DD(그날 포함). 최대 5년."}}}},
 	{"name": "add_event",
 		"description": "캘린더에 새 일정을 만든다(바로 만들어짐). 시각은 지역 시각 'YYYY-MM-DD HH:MM'. end 를 비우면 1시간. 종일이면 all_day true 에 start 는 'YYYY-MM-DD'. calendar 를 비우면 기본 캘린더. 날짜·시각이 애매하면 만들지 말고 먼저 물어본다.",
 		"input_schema": {"type": "object", "properties": {
@@ -29,13 +35,13 @@ const TOOLS := [
 			"all_day": {"type": "boolean"}, "location": {"type": "string"}, "notes": {"type": "string"},
 			"calendar": {"type": "string", "description": "캘린더 이름(사용자가 말했을 때만)."}}, "required": ["title", "start"]}},
 	{"name": "update_event",
-		"description": "list_events 가 붙인 번호(ref, 예 e3)의 일정을 바꾼다(제목·시작·끝·종일·장소·메모 중 바꿀 것만). 처음에는 confirm 없이 불러 무엇이 바뀌는지 받고, 사용자에게 그대로 할지 묻는다. 사용자가 다음 말에서 예라고 하면 같은 내용에 confirm true 로 다시 부른다. 반복 일정은 span this(이 회차만, 기본) 또는 future(이 회차부터 앞으로 모두).",
+		"description": "list_events·search_events 가 붙인 번호(ref, 예 e3)의 일정을 바꾼다(제목·시작·끝·종일·장소·메모 중 바꿀 것만). 처음에는 confirm 없이 불러 무엇이 바뀌는지 받고, 사용자에게 그대로 할지 묻는다. 사용자가 다음 말에서 예라고 하면 같은 내용에 confirm true 로 다시 부른다. 반복 일정은 span this(이 회차만, 기본) 또는 future(이 회차부터 앞으로 모두).",
 		"input_schema": {"type": "object", "properties": {
 			"ref": {"type": "string"}, "title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
 			"all_day": {"type": "boolean"}, "location": {"type": "string"}, "notes": {"type": "string"},
 			"span": {"type": "string", "enum": ["this", "future"]}, "confirm": {"type": "boolean"}}, "required": ["ref"]}},
 	{"name": "delete_event",
-		"description": "list_events 가 붙인 번호(ref)의 일정을 지운다. update_event 처럼 먼저 confirm 없이 불러 확인 문구를 받고, 사용자가 예라고 한 뒤에만 confirm true 로 다시 부른다. 반복 일정은 span this(이 회차만, 기본) 또는 future.",
+		"description": "list_events·search_events 가 붙인 번호(ref)의 일정을 지운다. update_event 처럼 먼저 confirm 없이 불러 확인 문구를 받고, 사용자가 예라고 한 뒤에만 confirm true 로 다시 부른다. 반복 일정은 span this(이 회차만, 기본) 또는 future.",
 		"input_schema": {"type": "object", "properties": {
 			"ref": {"type": "string"}, "span": {"type": "string", "enum": ["this", "future"]}, "confirm": {"type": "boolean"}}, "required": ["ref"]}},
 ]
@@ -85,7 +91,7 @@ func _ready() -> void:
 
 
 func has(tool: String) -> bool:
-	return tool in ["list_events", "add_event", "update_event", "delete_event",
+	return tool in ["list_events", "search_events", "add_event", "update_event", "delete_event",
 		"add_reminder", "list_reminders", "complete_reminder", "delete_reminder"]
 
 
@@ -93,6 +99,8 @@ func run(tool: String, input: Dictionary) -> Dictionary:
 	match tool:
 		"list_events":
 			return await _day(String(input.get("date", "")).strip_edges())
+		"search_events":
+			return await _search(input)
 		"add_event":
 			return await _add(input)
 		"update_event", "delete_event":
@@ -142,18 +150,35 @@ func _day(date: String) -> Dictionary:
 	var evs: Array = d.events
 	if evs.is_empty():
 		return {"text": "%s 일정이 없어요." % label, "error": false}
+	return {"text": DATA_NOTE + "%s 일정 %d개([번호]는 바꾸기·지우기에 쓴다, 사용자에게 말하지 않는다):\n%s" % [label, evs.size(), _lines(evs, date)], "error": false}
+
+
+# 일정마다 번호를 붙여 한 줄씩. date 가 있으면 그날 안의 시각은 시:분만, 아니면 날짜(요일)까지.
+func _lines(evs: Array, date: String) -> String:
 	var lines := PackedStringArray()
 	for e in evs:
 		var ref := "e%d" % next_ref
 		next_ref += 1
 		refs[ref] = {"id": String(e.id), "at": String(e.start), "title": String(e.title), "recurring": bool(e.recurring),
 			"readonly": bool(e.get("readonly", false)), "label": "%s %s" % [String(e.start), String(e.title)]}
-		var when := "종일"
-		if not e.all_day:
-			var s := String(e.start)
-			var en := String(e.end)
-			# 그날 밖에서 시작하거나 끝나면 날짜까지 쓴다
-			when = "%s~%s" % [s.substr(11) if s.begins_with(date) else s, en.substr(11) if en.begins_with(date) else en]
+		var s := String(e.start)
+		var en := String(e.end)
+		var when: String
+		if date != "":
+			when = "종일"
+			if not e.all_day:
+				# 그날 밖에서 시작하거나 끝나면 날짜까지 쓴다
+				when = "%s~%s" % [s.substr(11) if s.begins_with(date) else s, en.substr(11) if en.begins_with(date) else en]
+		else:
+			when = _wd(s.left(10))
+			if e.all_day:
+				when += " 종일"
+				if en.left(10) > s.left(10):   # 여러 날 종일(끝은 마지막 날 23:59 이거나 다음 날 0시)
+					var last := en.left(10) if en.substr(11) != "00:00" else _add_days(en.left(10), -1)
+					if last > s.left(10):
+						when += "~" + _wd(last)
+			else:
+				when += " %s~%s" % [s.substr(11), en.substr(11) if en.begins_with(s.left(10)) else en]
 		var parts := PackedStringArray([when, String(e.title)])
 		if e.has("location"):
 			parts.append("장소: " + String(e.location).replace("\n", " "))
@@ -165,7 +190,52 @@ func _day(date: String) -> Dictionary:
 		if e.get("readonly", false):
 			parts.append("읽기 전용(못 바꿈)")
 		lines.append("- [%s] " % ref + " | ".join(parts))
-	return {"text": DATA_NOTE + "%s 일정 %d개([번호]는 바꾸기·지우기에 쓴다, 사용자에게 말하지 않는다):\n%s" % [label, evs.size(), "\n".join(lines)], "error": false}
+	return "\n".join(lines)
+
+
+# "2026-11-26" → "2026-11-26(목)"
+func _wd(day: String) -> String:
+	var dd := Time.get_datetime_dict_from_datetime_string(day + "T12:00:00", true)
+	return "%s(%s)" % [day, WD[int(dd.weekday)]]
+
+
+func _add_days(day: String, n: int) -> String:
+	var u := Time.get_unix_time_from_datetime_string(day + "T12:00:00") + n * 86400
+	return Time.get_date_string_from_unix_time(u)
+
+
+func _search(input: Dictionary) -> Dictionary:
+	var q := String(input.get("query", "")).strip_edges()
+	var from := String(input.get("from", "")).strip_edges()
+	var to := String(input.get("to", "")).strip_edges()
+	var re := RegEx.create_from_string("^\\d{4}-\\d{2}-\\d{2}$")
+	if from == "":
+		from = _add_days(_today(), -30)
+	if to == "":
+		to = _add_days(from if input.has("from") else _today(), 365)
+	if not re.search(from) or not re.search(to):
+		return {"text": "날짜는 YYYY-MM-DD 꼴이어야 해요.", "error": true}
+	if to < from:
+		return {"text": "to 가 from 보다 앞이에요.", "error": true}
+	if Time.get_unix_time_from_datetime_string(to) - Time.get_unix_time_from_datetime_string(from) > 5 * 366 * 86400:
+		return {"text": "기간은 5년까지만 찾을 수 있어요.", "error": true}
+	var r: Array = await _helper(PackedStringArray(["find", JSON.stringify({"from": from, "to": to, "query": q})]))
+	var d = JSON.parse_string(String(r[1]).strip_edges())
+	if int(r[0]) == 2:
+		return {"text": NO_ACCESS, "error": true}
+	if int(r[0]) != 0 or not (d is Dictionary) or not d.has("events"):
+		print("calendar 도우미 실패 ", r[0], " ", String(r[1]).left(200))
+		return {"text": "캘린더를 읽지 못했어요.", "error": true}
+	var what := ("'%s' 든 " % q) if q != "" else ""
+	var span := "%s~%s" % [_wd(from), _wd(to)]
+	var evs: Array = d.events
+	if evs.is_empty():
+		return {"text": "%s에 %s일정이 없어요(제목·장소·메모에서 찾음). 오늘은 %s." % [span, what, _wd(_today())], "error": false}
+	var more := ""
+	if int(d.get("total", evs.size())) > evs.size():
+		more = " 모두 %d개 중 앞 %d개만 보인다(기간을 좁히면 나머지)." % [int(d.total), evs.size()]
+	return {"text": DATA_NOTE + "%s %s일정 %d개, 시작 순. 오늘은 %s.%s([번호]는 바꾸기·지우기에 쓴다, 사용자에게 말하지 않는다):\n%s" % [
+		span, what, evs.size(), _wd(_today()), more, _lines(evs, "")], "error": false}
 
 
 func _turn() -> int:
@@ -223,7 +293,7 @@ func _add(input: Dictionary) -> Dictionary:
 func _change(tool: String, input: Dictionary) -> Dictionary:
 	var ref := String(input.get("ref", "")).strip_edges()
 	if not refs.has(ref):
-		return {"text": "그 번호(%s)의 일정을 모르겠어요. 먼저 list_events 로 그날 일정을 읽고 번호를 쓴다." % ref, "error": true}
+		return {"text": "그 번호(%s)의 일정을 모르겠어요. 먼저 list_events·search_events 로 일정을 읽고 번호를 쓴다." % ref, "error": true}
 	var info: Dictionary = refs[ref]
 	if info.readonly:
 		return {"text": _err_text("readonly"), "error": true}

@@ -3,6 +3,7 @@
 // (Info.plist NSCalendarsFullAccessUsageDescription). 결과는 표준 출력에 JSON 한 줄.
 //
 //   frhgcal day YYYY-MM-DD   그날(지역 시각 0시~24시)에 걸친 일정
+//   frhgcal find '<JSON>'    {from, to, query?} 기간 안에서 제목·장소·메모로 찾기(2026-11-26), 앞 60개 + total
 //   frhgcal calendars        일정을 넣을 수 있는 캘린더 이름들과 기본 캘린더
 //   frhgcal add '<JSON>'     {title, start "YYYY-MM-DD HH:mm", end?, all_day?, location?, notes?, calendar?} 새 일정
 //   frhgcal update '<JSON>'  {id, at "그 회차 시작", span "this"|"future", title?, start?, end?, all_day?, location?, notes?}
@@ -77,17 +78,49 @@ dayFmt.locale = Locale(identifier: "en_US_POSIX")
 dayFmt.dateFormat = "yyyy-MM-dd"
 
 switch args[1] {
-case "day":
-    guard args.count >= 3, let day = dayFmt.date(from: args[2]) else { out(["error": "bad date"], 1) }
+case "day", "find":
+    // day: 그날 하루. find '<JSON>' {from "YYYY-MM-DD", to "YYYY-MM-DD"(그날 포함), query?}: 기간 안에서
+    // 제목·장소·메모에 query 가 든 일정(대소문자 무시, query 없으면 기간의 모든 일정). 반복 일정은 회차마다 나온다.
     let cal = Calendar.current
-    let start = cal.startOfDay(for: day)
-    let end = cal.date(byAdding: .day, value: 1, to: start)!
-    let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
-    let events = store.events(matching: pred).sorted {
-        ($0.isAllDay ? 0 : 1, $0.startDate) < ($1.isAllDay ? 0 : 1, $1.startDate)
+    var start: Date
+    var end: Date
+    var query = ""
+    if args[1] == "day" {
+        guard args.count >= 3, let day = dayFmt.date(from: args[2]) else { out(["error": "bad date"], 1) }
+        start = cal.startOfDay(for: day)
+        end = cal.date(byAdding: .day, value: 1, to: start)!
+    } else {
+        guard args.count >= 3, let data = args[2].data(using: .utf8),
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let f = (j["from"] as? String).flatMap({ dayFmt.date(from: $0) }),
+              let t = (j["to"] as? String).flatMap({ dayFmt.date(from: $0) }), t >= f
+        else { out(["error": "bad json"], 1) }
+        start = cal.startOfDay(for: f)
+        end = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: t))!
+        query = ((j["query"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
+    }
+    // EventKit 은 한 번에 4년까지만 찾으므로 1년씩 나눠 찾는다.
+    var events: [EKEvent] = []
+    var a = start
+    while a < end {
+        let b = min(cal.date(byAdding: .year, value: 1, to: a)!, end)
+        events += store.events(matching: store.predicateForEvents(withStart: a, end: b, calendars: nil))
+        a = b
+    }
+    var seen = Set<String>()
+    events = events.filter { seen.insert($0.calendarItemIdentifier + "@" + local.string(from: $0.startDate)).inserted }
+    if !query.isEmpty {
+        let opts: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+        events = events.filter { e in
+            [e.title, e.location, e.notes].contains { ($0 ?? "").range(of: query, options: opts) != nil }
+        }
+    }
+    events.sort {
+        if args[1] == "day" { return ($0.isAllDay ? 0 : 1, $0.startDate) < ($1.isAllDay ? 0 : 1, $1.startDate) }
+        return $0.startDate < $1.startDate
     }
     var list: [[String: Any]] = []
-    for e in events {
+    for e in events.prefix(60) {
         var d: [String: Any] = [
             "id": e.calendarItemIdentifier,
             "title": e.title ?? "",
@@ -102,7 +135,7 @@ case "day":
         if let n = e.notes, !n.isEmpty { d["notes"] = String(n.prefix(300)) }
         list.append(d)
     }
-    out(["events": list])
+    out(["events": list, "total": events.count])
 case "rem-lists":
     let lists = store.calendars(for: .reminder).filter { $0.allowsContentModifications }.map { $0.title }
     out(["lists": lists, "default": store.defaultCalendarForNewReminders()?.title ?? ""])

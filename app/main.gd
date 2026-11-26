@@ -154,6 +154,8 @@ var bubble: Node
 var talk_input: Node   # 말 거는 입력칸(talk_input.gd)
 var keystore: Node     # Claude API 키(키체인, keystore.gd)
 var talk: Node         # Claude 와 말하기(talk.gd)
+var health: Node       # 인터넷·Claude 를 쓸 수 있는지(health.gd). 못 쓰면 뒤 유리병 액체가 검어진다
+var dark_now := -1.0    # 뒤 병 검게 한 정도 0~1(셰이더 back_dark). -1 은 처음(바로 맞춤)
 const TINT_TIME := 0.6           # 옷 색이 다 바뀌는 데 걸리는 시간(초)
 var tint_now := -1.0             # 0 보라(Haiku) ~ 1 검정·터키색(Sonnet). -1 은 아직 안 정함(처음엔 바로 맞춘다)
 var potion_on := false           # 물약 색을 바꿨는지(아니면 원래 그라데이션). set_potion() 으로 바꾼다
@@ -225,6 +227,10 @@ func _ready() -> void:
 	actions.timer_fired.connect(func(msg): bubble.say(msg, 10.0))
 	talk = load("res://talk.gd").new()
 	add_child(talk)
+	health = load("res://health.gd").new()
+	health.keystore = keystore
+	add_child(health)
+	talk.health = health
 	talk.setup(keystore, actions)
 	talk.hat_get = func() -> bool: return hat_on
 	talk.hat_set = set_hat
@@ -549,6 +555,17 @@ func _potion_step(dt: float) -> void:
 	for m in frog.mats:
 		m.set_shader_parameter("bloom", smoothstep(0.0, 1.0, potion_now))
 		m.set_shader_parameter("bloom_to", potion_col)
+
+
+# 뒤 유리병 액체: 인터넷이 끊겼거나 Claude 를 쓸 수 없으면(health.gd) TINT_TIME 에 걸쳐 검게, 되면 원래 색으로.
+# 확인용 -- --dark 면 처음부터 검게(health 무시).
+func _dark_step(dt: float) -> void:
+	var want := 1.0 if ("--dark" in OS.get_cmdline_user_args() or (health != null and health.down())) else 0.0
+	if dark_now == want:
+		return
+	dark_now = want if dark_now < 0.0 else move_toward(dark_now, want, dt / TINT_TIME)
+	for m in frog.mats:
+		m.set_shader_parameter("back_dark", smoothstep(0.0, 1.0, dark_now))
 
 
 # 말할 때 Claude 에게 알려 주는 지금 몸 상태(talk.gd 시스템 프롬프트 '지금 상태').
@@ -919,6 +936,7 @@ func _process(dt: float) -> void:
 	_light_step(dt)
 	_tint_step(dt)
 	_potion_step(dt)
+	_dark_step(dt)
 	_hat_step(dt)
 	bubble.follow(_head_top(), _usable(), dt)
 	talk_input.follow(_feet(), _head_top(), _usable(), dt)
@@ -1120,6 +1138,9 @@ func _take_snapshots() -> void:
 			m.set_shader_parameter("bloom", 1.0)
 			m.set_shader_parameter("bloom_to", Color.html(pc))
 			m.set_shader_parameter("bloom_debug", OS.get_environment("POTION_DEBUG") == "1")
+	if OS.get_environment("BACK_DARK") != "":
+		for m in frog.mats:
+			m.set_shader_parameter("back_dark", float(OS.get_environment("BACK_DARK")))
 	# READ 가 있으면 책 읽기 확인용: 정면·3/4 로 꺼내기 → 펼치기 → 넘기기(u) 몇 순간. READ=시각들(쉼표)이면 그 시각만 정면.
 	if OS.get_environment("READ") != "":
 		frog.read_begin()

@@ -115,7 +115,7 @@ func tools() -> Array:
 
 # 도구 실행. {"text": 결과 글, "error": bool}
 func run(tool: String, input: Dictionary) -> Dictionary:
-	if tool.ends_with("_mail"):
+	if tool.ends_with("_mail") or tool == "empty_mail_trash":
 		return await mail.run(tool, input)
 	if calendar.has(tool):
 		return await calendar.run(tool, input)

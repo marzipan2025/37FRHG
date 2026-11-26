@@ -46,6 +46,9 @@ uniform float bloom_from_h = 0.72;
 uniform vec3 bloom_to : source_color = vec3(0.98, 0.80, 0.16);    // 노랑
 uniform float bloom_spread = 0.12;
 uniform bool bloom_debug = false;
+// 뒤 병(허리에 남는 병, 정점 색 파랑 0·빨강 1) 액체만 검게(0~1). 37FRHG 가 인터넷이 끊겼거나 Claude 를 쓸 수 없을 때 켠다
+// (2026-11-26 사용자 요청). bloom(두 병의 상태 색)보다 뒤에 칠한다.
+uniform float back_dark = 0.0;
 
 // 소품 들어 보이기(37FRHG preview ⑩ 책·⑪ 유리병): 소품 점은 frog.gd 가 정점 색 빨강(책 0, 병 0.5)으로 표시하고 골반에만 묶어 둔다.
 // book_m·vial_m 은 월드 → 월드 변환(골반에 붙은 지금 자리 → 손에 든 자리). 단위 행렬이면 허리 그대로.
@@ -299,6 +302,15 @@ void fragment() {
 			vec3 end = hsv2rgb(vec3(nh, ns, nv));
 			c = mix(c, mix(c, end, bloom), w);
 		}
+	}
+	if (back_dark > 0.001 && COLOR.b < 0.5 && COLOR.r > 0.75) {
+		vec3 h = rgb2hsv(c);
+		// 액체 고르기는 bloom 과 같다(보라·자홍, 로브는 문턱으로 빠짐; 위쪽 하늘색 빈 유리는 그대로).
+		float w = smoothstep(0.30, 0.40, h.z) * smoothstep(0.18, 0.28, h.y)
+			* smoothstep(0.62, 0.68, h.x) * (1.0 - smoothstep(0.96, 0.995, h.x));
+		// 먹물 같은 검정: 밝기를 0.12 배로 낮추고 채도를 줄여 원래 명암(유리 반사)만 희미하게 남긴다.
+		vec3 ink = hsv2rgb(vec3(h.x, h.y * 0.35, h.z * 0.12));
+		c = mix(c, ink, w * back_dark);
 	}
 	if (tint > 0.001 || tint_debug) {
 		vec3 h = rgb2hsv(c);
