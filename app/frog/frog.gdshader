@@ -108,6 +108,9 @@ uniform float scalp_gain = 0.93;                // 덮개 밝기(코 평균 대�
 uniform float scalp_sat = 1.12;                 // 덮개 채도(코 평균 대비)
 uniform vec2 scalp_cut = vec2(5.5, 12.0);      // frog.gd SCALP_CUT·SCALP_CUT_Z·EYE_KEEP 와 같게
 uniform vec2 scalp_cut_z = vec2(4.0, 12.0);
+uniform vec3 scalp_c = vec3(0.0, 5.0, 4.3);    // frog.gd 덮개 바탕 타원체(머리 좌표 cm)
+uniform vec3 scalp_r = vec3(13.0, 10.0, 13.6);
+uniform float scalp_smooth = 0.85;              // 뒤·옆 이음매 띠에서 법선을 타원체 쪽으로 섞는 정도
 uniform float eye_keep = 0.4;                 // 모자 빨강, 덮개 파랑(덮개는 hat_off 0 이어도 보임)
 
 varying vec3 hp;
@@ -185,6 +188,17 @@ float hue_diff(float a, float b) {
 	return fract(a - b + 0.5) - 0.5;
 }
 
+// 덮개·뒤통수 피부 이음매 띠의 법선을 바탕 타원체 법선 쪽으로 섞는다(머리 좌표 → 뷰). 덮개는 방향마다 가까운 피부 점까지의
+// 거리로 맞춰서, 피부 메시는 챙 밑이라 원래 울퉁불퉁해서 뒤통수 아래가 이그러져 보였다(2026-11-27 사용자 지적).
+vec3 scalp_normal(vec3 n, vec3 rp, mat4 view) {
+	float cut = mix(scalp_cut.x, scalp_cut.y, smoothstep(scalp_cut_z.x, scalp_cut_z.y, rp.z));
+	float w = (1.0 - smoothstep(cut + 1.0, cut + 4.0, rp.y)) * (1.0 - smoothstep(4.0, 8.0, rp.z)) * scalp_smooth;
+	if (w <= 0.0) return n;
+	vec3 g = (rp - scalp_c) / (scalp_r * scalp_r);
+	vec3 gv = normalize(mat3(view) * (inverse(mat3(head_inv)) * g));
+	return normalize(mix(n, gv, w));
+}
+
 float cover(float d) {
 	float f = max(fwidth(d), 1e-4);
 	return clamp(0.5 - d / f, 0.0, 1.0);
@@ -203,6 +217,7 @@ void fragment() {
 		// 옷깃 밖까지 나와서, 옷깃 윗부분을 가려 끊긴 것처럼 보였다(2026-11-24 사용자 지적).
 		if (hc0.z < mix(scalp_cut.x, scalp_cut.y, smoothstep(scalp_cut_z.x, scalp_cut_z.y, hc0.w)) - 0.3) discard;
 		c = hat_debug ? vec3(0.0, 0.3, 1.0) : bald;
+		NORMAL = scalp_normal(NORMAL, hc0.yzw, VIEW_MATRIX);
 	} else if (hc0.x < 0.5 && hat_off > 0.0 && UV.x >= 0.0) {
 		// 민머리: 자르는 선 위 피부는 눈두덩만 남기고 지운다(덮개가 대신). 선 아래 3cm 와 눈두덩의 초록은 덮개 색으로 이어 준다
 		// (챙 밑 그늘이 칠해져 있어서).
@@ -218,10 +233,14 @@ void fragment() {
 		vec3 ref = rgb2hsv(scalp_col);
 		// 입선 위 초록 피부(얼굴·볼·이마) 전체를 덮개와 같은 코 색으로: 텍스처에 칠해진 명암·광택이 덮개와 달라
 		// 눈 사이·옆에 경계선이 보였다(2026-11-24 사용자 요청). 콧구멍·입선·눈알은 초록이 아니라 그대로.
-		float k = smoothstep(5.2, 6.4, rp.y) * smoothstep(0.2, 0.8, eye_d)
+		// 뒤·옆(z 가 작은 쪽)은 옷깃까지 내려가며 바꾼다: 선 아래 뒤통수에 챙 그늘·밝은 줄이 칠해져 있어
+		// 덮개와의 경계가 들쭉날쭉하게 보였다(2026-11-27 사용자 지적). 얼굴 앞(입·턱)은 그대로 5.2 부터.
+		float y_lo = mix(-8.0, 5.2, smoothstep(3.0, 6.5, rp.z));
+		float k = smoothstep(y_lo, y_lo + 1.2, rp.y) * smoothstep(0.2, 0.8, eye_d)
 			* (1.0 - smoothstep(0.06, 0.12, abs(hv.x - ref.x)));
 		k = max(max(k, smoothstep(0.0, 0.15, hc0.x)), lidb) * hat_off;   // 모자와 이어져 있던 삼각형의 남은 쪽(그늘)·눈알 뒤
 		c = mix(c, bald, k);
+		if (FRONT_FACING) NORMAL = scalp_normal(NORMAL, rp, VIEW_MATRIX) * k + NORMAL * (1.0 - k);
 	} else if (hc0.x > 0.5) {
 		vec3 rp = hc0.yzw;
 		float hh = rp.y + (vnoise(rp * 0.28) - 0.5) * 2.0 * hat_noise + (vnoise(rp * 0.9 + 7.0) - 0.5) * 0.8;

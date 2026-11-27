@@ -92,6 +92,8 @@ var read_stop := -1.0     # 책 읽기를 끝내기 시작하는 때(동작 시�
 var read_book = null      # read_book.gd: 펼친 책
 var read_r_now := []      # 오른팔 평소 자세(전역 회전 [팔, 아래팔, 손]) — 페이지 넘길 때 여기서 섞는다
 var scalp_col := Color(0.5, 0.65, 0.2)   # 코(입 위 앞면) 평균 초록: 민머리 덮개 색
+var scalp_c := Vector3(0.0, 5.0, 4.3)    # 덮개 바탕 타원체 가운데·반지름(머리 좌표 cm): 셰이더가 이음매 법선을 매끈하게
+var scalp_r := Vector3(13.0, 10.0, 13.6)
 
 # 자세(37RHHG _pose 를 옮기고 개구리에 맞춘 것)
 # 입 벌리기(2026-11-23). 머리 좌표 cm(머리 뼈 원점, 기본 자세 메시 축: 캐릭터 왼쪽 x·위 y·앞 z).
@@ -164,6 +166,8 @@ func build(parent: Node3D) -> Dictionary:
 				sm.set_shader_parameter("albedo_col", src.albedo_color)
 				sm.set_shader_parameter("unit_scale", 1.0 / SCALE)
 				sm.set_shader_parameter("scalp_col", Color(scalp_col, 1.0))
+				sm.set_shader_parameter("scalp_c", scalp_c)
+				sm.set_shader_parameter("scalp_r", scalp_r)
 				m.set_surface_override_material(s, sm)
 				mat = sm
 				mats.append(sm)
@@ -327,6 +331,7 @@ const SCALP_SEGS := 64
 const SCALP_CONE := 4.0       # 도
 const SCALP_IN := 0.97        # 자르는 선 아래 방향은 피부 바로 안쪽(가려지게)
 const SCALP_DECAY := 0.97     # 선 위로 한 칸 갈 때마다 피부와의 차이를 줄이는 비율
+const SCALP_SMOOTH := 10       # 피부에 맞춘 방향 값을 이웃 평균으로 펴는 횟수
 
 
 # 머리 뼈에 묶인 초록 공(민머리 덮개와 같은 표시 2). c·r 은 머리 좌표 cm.
@@ -408,6 +413,8 @@ func _hat_mark(a: Array, img: Image, ho: Vector3, head_b: int) -> void:
 	# 바탕 타원체(가운데 높이 5)
 	var C := Vector3(0.0, 5.0, (zmin + zmax) * 0.5)
 	var er := Vector3(xmax, SCALP_TOP - C.y, (zmax - zmin) * 0.5)
+	scalp_c = C
+	scalp_r = er
 	var R := SCALP_RINGS
 	var S := SCALP_SEGS
 	var cone := cos(deg_to_rad(SCALP_CONE))
@@ -435,6 +442,23 @@ func _hat_mark(a: Array, img: Image, ho: Vector3, head_b: int) -> void:
 		return 1.0 / sqrt(pow(d.x / er.x, 2) + pow(d.y / er.y, 2) + pow(d.z / er.z, 2))
 	for g in dirs.size():
 		res[g] = rad[g] - ell.call(dirs[g]) if known[g] == 1 else 0.0
+	# 피부에 맞춘 방향(콘 안 가장 바깥 점)은 들쭉날쭉해서, 그 값이 선 위로 번지며 뒤통수 오른쪽 아래가 혹처럼 이그러졌다
+	# (2026-11-27 사용자 지적). 아는 방향끼리 이웃 평균으로 몇 번 펴 준다.
+	for it in SCALP_SMOOTH:
+		var nr := res.duplicate()
+		for i in R + 1:
+			for j in S:
+				var g := i * S + j
+				if known[g] == 0 or dirs[g].z > 0.2:   # 뒤쪽만(앞은 입꼬리가 덮개 밖으로 드러나 입 안이 비침)
+					continue
+				var sm := res[g]
+				var n := 1.0
+				for o in [maxi(i - 1, 0) * S + j, mini(i + 1, R) * S + j, i * S + (j + S - 1) % S, i * S + (j + 1) % S]:
+					if known[o] == 1:
+						sm += res[o]
+						n += 1.0
+				nr[g] = sm / n
+		res = nr
 	# 선 위(모르는 방향)는 이웃 차이의 평균을 조금씩 줄여 가며 메운다.
 	for it in 500:
 		for i in R + 1:

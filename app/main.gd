@@ -1158,7 +1158,7 @@ func _take_snapshots() -> void:
 		shots = [["hat_front", 0.0, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
 			["hat_34", -0.6, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
 			["hat_side", -PI * 0.5, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
-			["hat_back", PI * 0.8, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
+			["hat_back", PI * float(OS.get_environment("HAT_BACK_YAW") if OS.get_environment("HAT_BACK_YAW") != "" else "0.8"), 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0],
 			["hat_back2", PI, 0.0, 0.0, 0.0, 0.0, null, 0.0, "", -1.0]]
 	# MOUTH 가 있으면 입 확인용으로 서 있는 모습만 정면·3/4·옆에서
 	if OS.get_environment("MOUTH") != "":
